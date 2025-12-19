@@ -52,8 +52,18 @@
 
 <div id="section-clients-owe" class="section-content" style="display: block;">
     <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 16px; color: var(--danger);">
-        Clients Owe You
+        Clients Owe You (Pending Amount - Unpaid Losses)
     </h2>
+    {% if total_pending %}
+    <div style="background: var(--bg-content); border-radius: 8px; padding: 16px; margin-bottom: 16px; border: 2px solid var(--danger);">
+        <div style="font-size: 24px; font-weight: 700; color: var(--danger);">
+            Total Pending: ₹ {{ total_pending|floatformat:2 }}
+        </div>
+        <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+            Pending is a separate ledger - only affected by losses and client payments
+        </div>
+    </div>
+    {% endif %}
     <div class="table-wrapper">
         <div class="table-header">
             <div>Total clients: {{ clients_owe|length }}</div>
@@ -63,23 +73,35 @@
             <tr>
                 <th>Client Code</th>
                 <th>Client Name</th>
-                <th>Total Owed</th>
+                <th>Exchange</th>
+                <th>Total Funding</th>
+                <th>Exchange Balance</th>
+                <th>Pending Amount</th>
+                <th>Actions</th>
             </tr>
             </thead>
             <tbody>
             {% for item in clients_owe %}
                 <tr>
-                    <td><strong>{% if item.client_exchange__client__code %}{{ item.client_exchange__client__code }}{% else %}<span style="color: var(--muted);">—</span>{% endif %}</strong></td>
+                    <td><strong>{% if item.client_code %}{{ item.client_code }}{% else %}<span style="color: var(--muted);">—</span>{% endif %}</strong></td>
                     <td>
-                        <a href="{% url 'clients:detail' item.client_exchange__client__id %}" style="color: var(--accent); text-decoration: none;">
-                            {{ item.client_exchange__client__name }}
+                        <a href="{% url 'clients:balance' item.client_id %}?exchange={{ item.client_exchange_id }}" style="color: var(--accent); text-decoration: none;">
+                            {{ item.client_name }}
                         </a>
                     </td>
-                    <td><strong style="color: var(--danger);">₹ {{ item.total_owed|default:0 }}</strong></td>
+                    <td>{{ item.exchange_name }}</td>
+                    <td>₹ {{ item.total_funding|floatformat:2 }}</td>
+                    <td>₹ {{ item.exchange_balance|floatformat:2 }}</td>
+                    <td><strong style="color: var(--danger); font-size: 18px;">₹ {{ item.pending_amount|floatformat:2 }}</strong></td>
+                    <td>
+                        <button onclick="showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name }}', '{{ item.exchange_name }}', {{ item.pending_amount }}, 'client_pays')" class="btn btn-sm" style="background: var(--danger); color: white;">
+                            Record Payment
+                        </button>
+                    </td>
                 </tr>
             {% empty %}
                 <tr>
-                    <td colspan="3">No clients owe you for the selected period.</td>
+                    <td colspan="7" style="text-align: center; padding: 40px; color: var(--muted);">No pending amounts for the selected period.</td>
                 </tr>
             {% endfor %}
             </tbody>
@@ -89,8 +111,18 @@
 
 <div id="section-you-owe" class="section-content" style="display: none;">
     <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 16px; color: var(--success);">
-        You Owe Clients
+        You Owe Clients (Clients in Profit)
     </h2>
+    {% if total_profit %}
+    <div style="background: var(--bg-content); border-radius: 8px; padding: 16px; margin-bottom: 16px; border: 2px solid var(--success);">
+        <div style="font-size: 24px; font-weight: 700; color: var(--success);">
+            Total Profit: ₹ {{ total_profit|floatformat:2 }}
+        </div>
+        <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+            Profit payment does NOT affect pending amount (separate ledger)
+        </div>
+    </div>
+    {% endif %}
     <div class="table-wrapper">
         <div class="table-header">
             <div>Total clients: {{ you_owe|length }}</div>
@@ -100,29 +132,130 @@
             <tr>
                 <th>Client Code</th>
                 <th>Client Name</th>
-                <th>Total Owed</th>
+                <th>Exchange</th>
+                <th>Total Funding</th>
+                <th>Exchange Balance</th>
+                <th>Client Profit (Payable)</th>
+                <th>Actions</th>
             </tr>
             </thead>
             <tbody>
             {% for item in you_owe %}
                 <tr>
-                    <td><strong>{% if item.client_exchange__client__code %}{{ item.client_exchange__client__code }}{% else %}<span style="color: var(--muted);">—</span>{% endif %}</strong></td>
+                    <td><strong>{% if item.client_code %}{{ item.client_code }}{% else %}<span style="color: var(--muted);">—</span>{% endif %}</strong></td>
                     <td>
-                        <a href="{% url 'clients:detail' item.client_exchange__client__id %}" style="color: var(--accent); text-decoration: none;">
-                            {{ item.client_exchange__client__name }}
+                        <a href="{% url 'clients:balance' item.client_id %}?exchange={{ item.client_exchange_id }}" style="color: var(--accent); text-decoration: none;">
+                            {{ item.client_name }}
                         </a>
                     </td>
-                    <td><strong style="color: var(--success);">₹ {{ item.total_owed|default:0 }}</strong></td>
+                    <td>{{ item.exchange_name }}</td>
+                    <td>₹ {{ item.total_funding|floatformat:2 }}</td>
+                    <td>₹ {{ item.exchange_balance|floatformat:2 }}</td>
+                    <td><strong style="color: var(--success); font-size: 18px;">₹ {{ item.client_profit|floatformat:2 }}</strong></td>
+                    <td>
+                        <button onclick="showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name }}', '{{ item.exchange_name }}', {{ item.client_profit }}, 'admin_pays_profit')" class="btn btn-sm" style="background: var(--success); color: white;">
+                            Pay Profit
+                        </button>
+                    </td>
                 </tr>
             {% empty %}
                 <tr>
-                    <td colspan="3">You don't owe any clients for the selected period.</td>
+                    <td colspan="7" style="text-align: center; padding: 40px; color: var(--muted);">You don't owe any clients for the selected period.</td>
                 </tr>
             {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
+
+<!-- Settlement Form Modal -->
+<div id="settlement-form" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+    <div style="background: var(--bg-content); border-radius: 8px; padding: 24px; border: 1px solid var(--border); max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 style="font-size: 20px; font-weight: 600; margin: 0;">Settle Payment</h2>
+            <button onclick="hideSettlementForm()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
+        </div>
+        <form method="post" action="{% url 'clients:settle_payment' %}" id="settlement-form-content" onsubmit="return confirm('Are you sure you want to record this settlement payment?');">
+            {% csrf_token %}
+            <input type="hidden" name="client_id" id="settle-client-id">
+            <input type="hidden" name="client_exchange_id" id="settle-client-exchange-id">
+            <input type="hidden" name="payment_type" id="settle-payment-type" value="client_pays">
+            <div class="form-row">
+                <label class="field-label">Client</label>
+                <input type="text" id="settle-client-name" class="field-input" readonly style="background: var(--bg-secondary);">
+            </div>
+            <div class="form-row">
+                <label class="field-label">Exchange</label>
+                <input type="text" id="settle-exchange-name" class="field-input" readonly style="background: var(--bg-secondary);">
+            </div>
+            <div class="form-row">
+                <label class="field-label">Amount to Pay (₹) *</label>
+                <input type="number" name="amount" id="settle-amount" class="field-input" step="0.01" min="0" required placeholder="0.00">
+                <div id="pending-info" style="font-size: 12px; color: var(--muted); margin-top: 4px; display: none;">
+                    <span id="pending-amount-text"></span> - You can pay any amount (partial or full)
+                </div>
+            </div>
+            <div class="form-row">
+                <label class="field-label">Date *</label>
+                <input type="date" name="date" class="field-input" value="{% now 'Y-m-d' %}" required>
+            </div>
+            <div class="form-row">
+                <label class="field-label">Note (Optional)</label>
+                <textarea name="note" class="field-input" rows="3" placeholder="Add any notes about this settlement"></textarea>
+            </div>
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+                <button type="submit" class="btn btn-primary" style="background: var(--success);">Pay Client</button>
+                <button type="button" onclick="hideSettlementForm()" class="btn">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    function showSettlementForm(clientId, clientExchangeId, clientName, exchangeName, amount, paymentType) {
+        document.getElementById('settle-client-id').value = clientId;
+        document.getElementById('settle-client-exchange-id').value = clientExchangeId;
+        document.getElementById('settle-client-name').value = clientName;
+        document.getElementById('settle-exchange-name').value = exchangeName;
+        document.getElementById('settle-amount').value = parseFloat(amount).toFixed(2);
+        document.getElementById('settle-payment-type').value = paymentType || 'client_pays';
+        
+        // Update form title and button text based on payment type
+        const formTitle = document.querySelector('#settlement-form h2');
+        const submitButton = document.querySelector('#settlement-form button[type="submit"]');
+        const pendingInfo = document.getElementById('pending-info');
+        const pendingAmountText = document.getElementById('pending-amount-text');
+        const amountInput = document.getElementById('settle-amount');
+        
+        if (paymentType === 'admin_pays_profit') {
+            formTitle.textContent = 'Pay Client Profit';
+            submitButton.textContent = 'Pay Client';
+            submitButton.style.background = 'var(--success)';
+            pendingInfo.style.display = 'none';
+            amountInput.max = ''; // No limit for profit payments
+        } else {
+            formTitle.textContent = 'Record Client Payment (Partial or Full)';
+            submitButton.textContent = 'Record Payment';
+            submitButton.style.background = 'var(--danger)';
+            pendingInfo.style.display = 'block';
+            pendingAmountText.textContent = 'Pending Amount: ₹' + parseFloat(amount).toFixed(2);
+            amountInput.max = parseFloat(amount).toFixed(2); // Max is pending amount
+            amountInput.placeholder = 'Enter amount (up to ₹' + parseFloat(amount).toFixed(2) + ')';
+        }
+        
+        document.getElementById('settlement-form').style.display = 'flex';
+    }
+    
+    function hideSettlementForm() {
+        document.getElementById('settlement-form').style.display = 'none';
+    }
+    
+    document.getElementById('settlement-form').addEventListener('click', function(e) {
+        if (e.target === this) {
+            hideSettlementForm();
+        }
+    });
+</script>
 
 <script>
     function showSection(sectionId) {

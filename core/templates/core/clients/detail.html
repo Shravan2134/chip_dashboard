@@ -29,10 +29,15 @@
     </div>
 </div>
 
-<div class="mt-3">
+<!-- Active Exchanges Section -->
+<div class="mt-4">
+    <h2 style="font-size: 22px; font-weight: 600; margin-bottom: 16px; color: var(--text); display: flex; align-items: center; gap: 8px;">
+        <span style="width: 4px; height: 24px; background: var(--success); border-radius: 2px;"></span>
+        Active Exchanges
+    </h2>
     <div class="table-wrapper">
         <div class="table-header">
-            <span>Active Exchanges</span>
+            <span>Total: {{ client_exchanges|length }} active exchange{{ client_exchanges|length|pluralize }}</span>
         </div>
         <table>
             <thead>
@@ -40,25 +45,24 @@
                 <th>Name</th>
                 <th>My Share %</th>
                 <th>Company Share %</th>
-                <th>Status</th>
+                <th>Actions</th>
             </tr>
             </thead>
             <tbody>
             {% for ce in client_exchanges %}
                 <tr>
                     <td>
-                        <a href="{% url 'exchanges:report' ce.exchange.pk %}" style="color: var(--accent); text-decoration: none;">{{ ce.exchange.name }}</a>
+                        <a href="{% url 'clients:balance' client.pk %}?exchange={{ ce.pk }}" style="color: var(--accent); text-decoration: none; font-weight: 600;">{{ ce.exchange.name }}{% if ce.exchange.code %} ({{ ce.exchange.code }}){% endif %}</a>
                     </td>
                     <td>{{ ce.my_share_pct }}%</td>
                     <td>{{ ce.company_share_pct }}%</td>
                     <td>
-                        <span class="badge badge-success">Active</span>
-                        <a href="{% url 'exchanges:edit_client_link' ce.pk %}" class="btn btn-sm" style="margin-left: 8px;">Edit</a>
+                        <a href="{% url 'exchanges:edit_client_link' ce.pk %}" class="btn btn-sm">Edit</a>
                     </td>
                 </tr>
             {% empty %}
                 <tr>
-                    <td colspan="4">No active exchanges configured yet.</td>
+                    <td colspan="4" style="text-align: center; padding: 40px; color: var(--muted);">No active exchanges configured yet.</td>
                 </tr>
             {% endfor %}
             </tbody>
@@ -66,11 +70,15 @@
     </div>
 </div>
 
-{% if inactive_client_exchanges %}
-<div class="mt-3">
+<!-- Inactive Exchanges Section -->
+<div class="mt-4">
+    <h2 style="font-size: 22px; font-weight: 600; margin-bottom: 16px; color: var(--text); display: flex; align-items: center; gap: 8px;">
+        <span style="width: 4px; height: 24px; background: var(--muted); border-radius: 2px;"></span>
+        Inactive Exchanges
+    </h2>
     <div class="table-wrapper">
         <div class="table-header">
-            <span>Inactive Exchanges</span>
+            <span>Total: {{ inactive_client_exchanges|length }} inactive exchange{{ inactive_client_exchanges|length|pluralize }}</span>
         </div>
         <table>
             <thead>
@@ -78,28 +86,30 @@
                 <th>Name</th>
                 <th>My Share %</th>
                 <th>Company Share %</th>
-                <th>Status</th>
+                <th>Actions</th>
             </tr>
             </thead>
             <tbody>
             {% for ce in inactive_client_exchanges %}
                 <tr>
                     <td>
-                        <a href="{% url 'exchanges:report' ce.exchange.pk %}" style="color: var(--accent); text-decoration: none;">{{ ce.exchange.name }}</a>
+                        <a href="{% url 'clients:balance' client.pk %}?exchange={{ ce.pk }}" style="color: var(--accent); text-decoration: none; font-weight: 600;">{{ ce.exchange.name }}{% if ce.exchange.code %} ({{ ce.exchange.code }}){% endif %}</a>
                     </td>
                     <td>{{ ce.my_share_pct }}%</td>
                     <td>{{ ce.company_share_pct }}%</td>
                     <td>
-                        <span class="badge badge-muted">Inactive</span>
-                        <a href="{% url 'exchanges:edit_client_link' ce.pk %}" class="btn btn-sm" style="margin-left: 8px;">Edit</a>
+                        <a href="{% url 'exchanges:edit_client_link' ce.pk %}" class="btn btn-sm">Edit</a>
                     </td>
+                </tr>
+            {% empty %}
+                <tr>
+                    <td colspan="4" style="text-align: center; padding: 40px; color: var(--muted);">No inactive exchanges.</td>
                 </tr>
             {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
-{% endif %}
 
 <div class="mt-3">
     <div class="table-wrapper">

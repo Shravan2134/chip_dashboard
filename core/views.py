@@ -8,7 +8,154 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 
-from .models import Client, Exchange, ClientExchange, Transaction, CompanyShareRecord, SystemSettings, ClientDailyBalance
+from .models import Client, Exchange, ClientExchange, Transaction, CompanyShareRecord, SystemSettings, ClientDailyBalance, PendingAmount
+
+
+def get_exchange_balance(client_exchange):
+    """
+    Get current exchange balance (separate ledger).
+    Exchange balance = latest recorded balance + extra adjustment.
+    """
+    latest_balance_record = ClientDailyBalance.objects.filter(
+        client_exchange=client_exchange
+    ).order_by("-date").first()
+    
+    if latest_balance_record:
+        return latest_balance_record.remaining_balance + (latest_balance_record.extra_adjustment or Decimal(0))
+    else:
+        # If no balance recorded, start with total funding
+        total_funding = Transaction.objects.filter(
+            client_exchange=client_exchange,
+            transaction_type=Transaction.TYPE_FUNDING
+        ).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+        return total_funding
+
+
+def get_pending_amount(client_exchange):
+    """
+    Get pending amount (separate ledger for unpaid losses).
+    Pending is only affected by losses and client payments.
+    """
+    pending, _ = PendingAmount.objects.get_or_create(
+        client_exchange=client_exchange,
+        defaults={"pending_amount": Decimal(0)}
+    )
+    return pending.pending_amount
+
+
+def update_pending_from_balance_change(client_exchange, previous_balance, new_balance):
+    """
+    Update pending amount when exchange balance changes.
+    If balance decreases, add the difference to pending (loss).
+    If balance increases, it's profit (doesn't affect pending).
+    Pending is a separate ledger - only losses create pending.
+    """
+    if new_balance < previous_balance:
+        # Balance decreased = loss, add to pending
+        loss = previous_balance - new_balance
+        pending, _ = PendingAmount.objects.get_or_create(
+            client_exchange=client_exchange,
+            defaults={"pending_amount": Decimal(0)}
+        )
+        pending.pending_amount += loss
+        pending.save()
+        return loss
+    return Decimal(0)
+
+
+def calculate_client_profit_loss(client_exchange):
+    """
+    Calculate client profit/loss based on separate ledgers:
+    - Total funding (chips given)
+    - Current exchange balance
+    - Pending amount (separate, unpaid losses)
+    
+    Returns:
+        dict with:
+        - total_funding: Total money given to client (turnover)
+        - exchange_balance: Current exchange balance
+        - pending_amount: Unpaid losses (separate ledger)
+        - client_profit_loss: Exchange balance change (profit if positive, loss if negative)
+        - is_profit: Boolean indicating if client is in profit
+        - latest_balance_record: Latest ClientDailyBalance record
+    """
+    # Get total funding (turnover = chips given)
+    total_funding = Transaction.objects.filter(
+        client_exchange=client_exchange,
+        transaction_type=Transaction.TYPE_FUNDING
+    ).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    
+    # Get latest balance record
+    latest_balance_record = ClientDailyBalance.objects.filter(
+        client_exchange=client_exchange
+    ).order_by("-date").first()
+    
+    # Get current exchange balance
+    exchange_balance = get_exchange_balance(client_exchange)
+    
+    # Get pending amount (separate ledger)
+    pending_amount = get_pending_amount(client_exchange)
+    
+    # Calculate profit/loss (exchange balance change from funding)
+    client_profit_loss = exchange_balance - total_funding
+    is_profit = client_profit_loss > 0
+    
+    return {
+        "total_funding": total_funding,
+        "exchange_balance": exchange_balance,
+        "pending_amount": pending_amount,
+        "client_profit_loss": client_profit_loss,
+        "is_profit": is_profit,
+        "latest_balance_record": latest_balance_record,
+    }
+
+
+def calculate_admin_profit_loss(client_profit_loss, settings):
+    """
+    Calculate admin profit/loss and company share based on client profit/loss.
+    
+    Args:
+        client_profit_loss: Client's profit (positive) or loss (negative)
+        settings: SystemSettings instance
+    
+    Returns:
+        dict with:
+        - admin_profit: Admin profit on client loss (if client in loss)
+        - admin_loss: Admin loss on client profit (if client in profit)
+        - company_share_profit: Company share from admin profit
+        - company_share_loss: Company share from admin loss
+        - admin_net: Net amount for admin after company share
+    """
+    if client_profit_loss < 0:
+        # Client in LOSS - Admin gets profit
+        client_loss = abs(client_profit_loss)
+        admin_profit = (client_loss * settings.admin_profit_pct) / Decimal(100)
+        company_share_profit = (admin_profit * settings.company_share_on_profit_pct) / Decimal(100)
+        admin_net_profit = admin_profit - company_share_profit
+        
+        return {
+            "admin_profit": admin_profit,
+            "admin_loss": Decimal(0),
+            "company_share_profit": company_share_profit,
+            "company_share_loss": Decimal(0),
+            "admin_net": admin_net_profit,
+            "admin_bears": Decimal(0),  # No loss when client is in loss
+        }
+    else:
+        # Client in PROFIT - Admin bears loss
+        client_profit = client_profit_loss
+        admin_loss = (client_profit * settings.admin_loss_pct) / Decimal(100)
+        company_share_loss = (admin_loss * settings.company_share_on_loss_pct) / Decimal(100)
+        admin_net_loss = admin_loss - company_share_loss
+        
+        return {
+            "admin_profit": Decimal(0),
+            "admin_loss": admin_loss,
+            "company_share_profit": Decimal(0),
+            "company_share_loss": company_share_loss,
+            "admin_net": -admin_net_loss,  # Negative because it's a loss
+            "admin_bears": admin_net_loss,  # Positive amount admin bears
+        }
 
 
 def dashboard(request):
@@ -80,17 +227,31 @@ def dashboard(request):
 
 
 def client_list(request):
-    search_query = request.GET.get("search", "")
+    client_search = request.GET.get("client_search", "")
+    exchange_id = request.GET.get("exchange", "")
+    
     clients = Client.objects.all().order_by("name")
     
-    if search_query:
+    # Filter by client name or code
+    if client_search:
         clients = clients.filter(
-            Q(name__icontains=search_query) | Q(code__icontains=search_query)
+            Q(name__icontains=client_search) | Q(code__icontains=client_search)
         )
+    
+    # Filter by exchange
+    if exchange_id:
+        clients = clients.filter(
+            client_exchanges__exchange_id=exchange_id
+        ).distinct()
+    
+    # Get all exchanges for dropdown
+    all_exchanges = Exchange.objects.filter(is_active=True).order_by("name")
     
     return render(request, "core/clients/list.html", {
         "clients": clients,
-        "search_query": search_query,
+        "client_search": client_search,
+        "selected_exchange": int(exchange_id) if exchange_id else None,
+        "all_exchanges": all_exchanges,
     })
 
 
@@ -116,7 +277,10 @@ def client_detail(request, pk):
 
 
 def client_give_money(request, client_pk):
-    """Give money to a client for a specific exchange (FUNDING transaction)."""
+    """
+    Give money to a client for a specific exchange (FUNDING transaction).
+    Funding ONLY increases exchange balance. It does NOT affect pending.
+    """
     client = get_object_or_404(Client, pk=client_pk)
     
     if request.method == "POST":
@@ -128,17 +292,35 @@ def client_give_money(request, client_pk):
         if client_exchange_id and tx_date and amount > 0:
             client_exchange = get_object_or_404(ClientExchange, pk=client_exchange_id, client=client)
             
-            # For FUNDING: client gets the full amount, you get nothing
+            # Get current exchange balance
+            current_balance = get_exchange_balance(client_exchange)
+            
+            # Create FUNDING transaction
             transaction = Transaction.objects.create(
                 client_exchange=client_exchange,
                 date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
                 transaction_type=Transaction.TYPE_FUNDING,
                 amount=amount,
-                client_share_amount=amount,
+                client_share_amount=amount,  # Client gets the full amount
                 your_share_amount=Decimal(0),
                 company_share_amount=Decimal(0),
                 note=note,
             )
+            
+            # Update exchange balance by creating/updating balance record
+            # Funding increases exchange balance
+            new_balance = current_balance + amount
+            ClientDailyBalance.objects.update_or_create(
+                client_exchange=client_exchange,
+                date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
+                defaults={
+                    "remaining_balance": new_balance,
+                    "extra_adjustment": Decimal(0),
+                    "note": note or f"Funding: +₹{amount}",
+                }
+            )
+            
+            # Funding does NOT affect pending (separate ledger)
             
             return redirect(reverse("clients:detail", args=[client.pk]))
     
@@ -146,14 +328,84 @@ def client_give_money(request, client_pk):
     return redirect(reverse("clients:detail", args=[client.pk]))
 
 
+def settle_payment(request):
+    """
+    Handle two types of settlements:
+    1. Client pays pending amount (reduces pending - partial or full payment allowed)
+    2. Admin pays client profit (doesn't affect pending)
+    
+    Partial payments are fully supported - client can pay any amount up to pending.
+    """
+    if request.method == "POST":
+        client_id = request.POST.get("client_id")
+        client_exchange_id = request.POST.get("client_exchange_id")
+        amount = Decimal(request.POST.get("amount", 0))
+        tx_date = request.POST.get("date")
+        note = request.POST.get("note", "")
+        payment_type = request.POST.get("payment_type", "client_pays")  # client_pays or admin_pays_profit
+        
+        if client_id and client_exchange_id and amount > 0 and tx_date:
+            client = get_object_or_404(Client, pk=client_id)
+            client_exchange = get_object_or_404(ClientExchange, pk=client_exchange_id, client=client)
+            
+            if payment_type == "client_pays":
+                # Client pays pending amount - reduces pending (partial or full payment)
+                pending, _ = PendingAmount.objects.get_or_create(
+                    client_exchange=client_exchange,
+                    defaults={"pending_amount": Decimal(0)}
+                )
+                
+                # Get current pending amount
+                current_pending = pending.pending_amount
+                
+                # Reduce pending by payment amount (can't go below 0)
+                # Allow partial payments - any amount up to pending
+                payment_amount = min(amount, current_pending)  # Don't allow overpayment
+                pending.pending_amount = max(Decimal(0), current_pending - payment_amount)
+                pending.save()
+                
+                # Create SETTLEMENT transaction for client payment
+                Transaction.objects.create(
+                    client_exchange=client_exchange,
+                    date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
+                    transaction_type=Transaction.TYPE_SETTLEMENT,
+                    amount=payment_amount,
+                    client_share_amount=Decimal(0),  # Client pays, so negative for client
+                    your_share_amount=payment_amount,  # Admin receives
+                    company_share_amount=Decimal(0),
+                    note=note or f"Client payment against pending amount (₹{payment_amount} of ₹{current_pending})",
+                )
+                
+                return redirect(reverse("pending:summary") + "?section=clients-owe")
+            else:
+                # Admin pays client profit - doesn't affect pending or exchange balance
+                Transaction.objects.create(
+                    client_exchange=client_exchange,
+                    date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
+                    transaction_type=Transaction.TYPE_SETTLEMENT,
+                    amount=amount,
+                    client_share_amount=amount,  # Client receives
+                    your_share_amount=Decimal(0),
+                    company_share_amount=Decimal(0),
+                    note=note or f"Admin payment for client profit",
+                )
+                
+                return redirect(reverse("pending:summary") + "?section=you-owe")
+    
+    # If GET or validation fails, redirect to pending summary
+    return redirect(reverse("pending:summary"))
+
+
 def client_create(request):
     if request.method == "POST":
         name = request.POST.get("name")
         code = request.POST.get("code", "").strip()
+        referred_by = request.POST.get("referred_by", "").strip()
         if name:
             client = Client.objects.create(
                 name=name,
-                code=code if code else None
+                code=code if code else None,
+                referred_by=referred_by if referred_by else None
             )
             return redirect(reverse("clients:detail", args=[client.pk]))
     return render(request, "core/clients/create.html")
@@ -210,13 +462,16 @@ def transaction_list(request):
 
 def pending_summary(request):
     """
-    Simple derived view for:
-    - Clients owe you
-    - You owe clients
-
-    Auto-shift behaviour is handled by aggregation over all history.
+    Pending payments view based on separate ledgers:
+    - Clients owe you: Clients with pending amount (unpaid losses)
+    - You owe clients: Clients in profit (exchange balance > total funding)
     
-    Supports time-travel: filter by date to see pending payments as of that date.
+    Separate Ledgers:
+    - Exchange Balance: Client's playing balance (separate)
+    - Pending Amount: Unpaid losses (separate, only affected by losses and client payments)
+    - Funding: Chips given (only affects exchange balance)
+    - Settlement: Actual payments (client pays pending OR admin pays profit)
+    
     Supports report types: daily, weekly, monthly
     """
     from datetime import timedelta
@@ -230,71 +485,91 @@ def pending_summary(request):
         end_date = today
         date_range_label = f"Today ({today.strftime('%B %d, %Y')})"
     elif report_type == "weekly":
-        # Weekly: from last same weekday to this same weekday (7 days)
-        # If today is Monday, show from last Monday to this Monday
-        # If today is Tuesday, show from last Tuesday to this Tuesday
         start_date = today - timedelta(days=7)
         end_date = today
         weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         today_weekday = today.weekday()
         date_range_label = f"Weekly ({weekday_names[today_weekday]} to {weekday_names[today_weekday]}): {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
     elif report_type == "monthly":
-        # Get today's day of month
         day_of_month = today.day
-        # Calculate start date (last month's same day)
         if today.month == 1:
-            # If January, go to December of previous year
             start_date = date(today.year - 1, 12, min(day_of_month, 31))
         else:
-            # Get last month
             last_month = today.month - 1
-            # Handle edge case where day doesn't exist in last month (e.g., Jan 31 -> Dec 31)
             last_month_days = (date(today.year, today.month, 1) - timedelta(days=1)).day
             start_date = date(today.year, last_month, min(day_of_month, last_month_days))
         end_date = today
         date_range_label = f"Monthly ({start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')})"
     else:
-        # Default to daily
         start_date = today
         end_date = today
         date_range_label = f"Today ({today.strftime('%B %d, %Y')})"
     
-    # Get date parameter for "as of" functionality (optional override)
-    as_of_str = request.GET.get("date")
-    if as_of_str:
-        as_of = date.fromisoformat(as_of_str)
-        end_date = as_of  # Use as_of as end date if provided
-    else:
-        as_of = end_date
+    # Get all active client exchanges
+    client_exchanges = ClientExchange.objects.filter(
+        is_active=True
+    ).select_related("client", "exchange").all()
     
-    # Filter transactions within the date range
-    base_qs = Transaction.objects.filter(date__gte=start_date, date__lte=end_date)
+    # Get system settings
+    settings = SystemSettings.load()
     
-    # Clients owe you -> your share of losses not yet settled (simplified)
-    clients_owe = (
-        base_qs.filter(transaction_type=Transaction.TYPE_LOSS)
-        .values("client_exchange__client__id", "client_exchange__client__name", "client_exchange__client__code")
-        .annotate(total_owed=Sum("your_share_amount"))
-        .order_by("-total_owed")
-    )
-
-    # You owe clients -> client share of profits not yet settled (simplified)
-    you_owe = (
-        base_qs.filter(transaction_type=Transaction.TYPE_PROFIT)
-        .values("client_exchange__client__id", "client_exchange__client__name", "client_exchange__client__code")
-        .annotate(total_owed=Sum("client_share_amount"))
-        .order_by("-total_owed")
-    )
-
+    # Separate lists based on separate ledgers
+    clients_owe_list = []  # Clients with pending amount (unpaid losses)
+    you_owe_list = []  # Clients in profit (admin owes)
+    
+    for client_exchange in client_exchanges:
+        # Get data from separate ledgers
+        profit_loss_data = calculate_client_profit_loss(client_exchange)
+        pending_amount = profit_loss_data["pending_amount"]
+        client_profit_loss = profit_loss_data["client_profit_loss"]
+        
+        # Clients with pending amount (unpaid losses)
+        if pending_amount > 0:
+            clients_owe_list.append({
+                "client_id": client_exchange.client.pk,
+                "client_name": client_exchange.client.name,
+                "client_code": client_exchange.client.code,
+                "exchange_name": client_exchange.exchange.name,
+                "exchange_id": client_exchange.exchange.pk,
+                "client_exchange_id": client_exchange.pk,
+                "pending_amount": pending_amount,
+                "total_funding": profit_loss_data["total_funding"],
+                "exchange_balance": profit_loss_data["exchange_balance"],
+            })
+        
+        # Clients in profit (admin owes)
+        if client_profit_loss > 0:
+            you_owe_list.append({
+                "client_id": client_exchange.client.pk,
+                "client_name": client_exchange.client.name,
+                "client_code": client_exchange.client.code,
+                "exchange_name": client_exchange.exchange.name,
+                "exchange_id": client_exchange.exchange.pk,
+                "client_exchange_id": client_exchange.pk,
+                "client_profit": client_profit_loss,
+                "total_funding": profit_loss_data["total_funding"],
+                "exchange_balance": profit_loss_data["exchange_balance"],
+            })
+    
+    # Sort by amount (descending)
+    clients_owe_list.sort(key=lambda x: x["pending_amount"], reverse=True)
+    you_owe_list.sort(key=lambda x: x["client_profit"], reverse=True)
+    
+    # Calculate totals
+    total_pending = sum(item["pending_amount"] for item in clients_owe_list)
+    total_profit = sum(item["client_profit"] for item in you_owe_list)
+    
     context = {
-        "clients_owe": clients_owe,
-        "you_owe": you_owe,
-        "as_of": as_of,
+        "clients_owe": clients_owe_list,
+        "you_owe": you_owe_list,
+        "total_pending": total_pending,
+        "total_profit": total_profit,
         "today": today,
         "report_type": report_type,
         "start_date": start_date,
         "end_date": end_date,
         "date_range_label": date_range_label,
+        "settings": settings,
     }
     return render(request, "core/pending/summary.html", context)
 
@@ -913,6 +1188,51 @@ def get_exchanges_for_client(request):
     return JsonResponse([], safe=False)
 
 
+def get_latest_balance_for_exchange(request, client_pk):
+    """AJAX endpoint to get latest balance data for a client-exchange."""
+    client = get_object_or_404(Client, pk=client_pk)
+    client_exchange_id = request.GET.get("client_exchange_id")
+    
+    if client_exchange_id:
+        try:
+            client_exchange = ClientExchange.objects.get(pk=client_exchange_id, client=client)
+            
+            # Get latest balance record
+            latest_balance = ClientDailyBalance.objects.filter(
+                client_exchange=client_exchange
+            ).order_by("-date").first()
+            
+            # Get calculated balance from transactions
+            transactions = Transaction.objects.filter(client_exchange=client_exchange)
+            total_funding = transactions.filter(transaction_type=Transaction.TYPE_FUNDING).aggregate(total=Sum("amount"))["total"] or 0
+            client_profit_share = transactions.filter(transaction_type=Transaction.TYPE_PROFIT).aggregate(total=Sum("client_share_amount"))["total"] or 0
+            client_loss_share = transactions.filter(transaction_type=Transaction.TYPE_LOSS).aggregate(total=Sum("client_share_amount"))["total"] or 0
+            calculated_balance = total_funding + client_profit_share - client_loss_share
+            
+            if latest_balance:
+                return JsonResponse({
+                    "success": True,
+                    "date": latest_balance.date.isoformat(),
+                    "remaining_balance": str(latest_balance.remaining_balance),
+                    "note": latest_balance.note or "",
+                    "calculated_balance": str(calculated_balance),
+                    "has_recorded_balance": True,
+                })
+            else:
+                return JsonResponse({
+                    "success": True,
+                    "date": date.today().isoformat(),
+                    "remaining_balance": str(calculated_balance),
+                    "note": "",
+                    "calculated_balance": str(calculated_balance),
+                    "has_recorded_balance": False,
+                })
+        except ClientExchange.DoesNotExist:
+            return JsonResponse({"success": False, "error": "Exchange not found"}, status=404)
+    
+    return JsonResponse({"success": False, "error": "Exchange ID required"}, status=400)
+
+
 # Period-based Reports
 def report_daily(request):
     """Daily report for a specific date with graphs and analysis."""
@@ -1442,6 +1762,13 @@ def settings_view(request):
     if request.method == "POST":
         settings.weekly_report_day = int(request.POST.get("weekly_report_day", 0))
         settings.auto_generate_weekly_reports = request.POST.get("auto_generate_weekly_reports") == "on"
+        
+        # Update profit/loss configuration
+        settings.admin_profit_pct = Decimal(request.POST.get("admin_profit_pct", 11))
+        settings.admin_loss_pct = Decimal(request.POST.get("admin_loss_pct", 10))
+        settings.company_share_on_profit_pct = Decimal(request.POST.get("company_share_on_profit_pct", 40))
+        settings.company_share_on_loss_pct = Decimal(request.POST.get("company_share_on_loss_pct", 50))
+        
         settings.save()
         return redirect(reverse("settings"))
     
@@ -1456,41 +1783,83 @@ def client_balance(request, client_pk):
     # Handle daily balance recording/editing
     if request.method == "POST" and request.POST.get("action") == "record_balance":
         balance_date = request.POST.get("date")
+        client_exchange_id = request.POST.get("client_exchange")
         remaining_balance = Decimal(request.POST.get("remaining_balance", 0))
+        extra_adjustment = Decimal(request.POST.get("extra_adjustment", 0) or 0)
         note = request.POST.get("note", "")
         balance_id = request.POST.get("balance_id")
         
-        if balance_date and remaining_balance >= 0:
+        if balance_date and client_exchange_id and remaining_balance >= 0:
+            client_exchange = get_object_or_404(ClientExchange, pk=client_exchange_id, client=client)
+            
+            # Get previous balance before updating
+            previous_balance = get_exchange_balance(client_exchange)
+            
             if balance_id:
                 # Edit existing balance
-                balance = get_object_or_404(ClientDailyBalance, pk=balance_id, client=client)
+                balance = get_object_or_404(ClientDailyBalance, pk=balance_id, client_exchange__client=client)
+                # Get previous balance from this record
+                old_balance = balance.remaining_balance + (balance.extra_adjustment or Decimal(0))
                 balance.date = date.fromisoformat(balance_date)
+                balance.client_exchange = client_exchange
                 balance.remaining_balance = remaining_balance
+                balance.extra_adjustment = extra_adjustment
                 balance.note = note
                 balance.save()
+                
+                # Calculate new balance
+                new_balance = remaining_balance + extra_adjustment
+                
+                # Update pending if balance decreased
+                if new_balance < old_balance:
+                    update_pending_from_balance_change(client_exchange, old_balance, new_balance)
             else:
                 # Create new balance
-                ClientDailyBalance.objects.update_or_create(
-                    client=client,
+                new_balance = remaining_balance + extra_adjustment
+                balance, created = ClientDailyBalance.objects.update_or_create(
+                    client_exchange=client_exchange,
                     date=date.fromisoformat(balance_date),
                     defaults={
                         "remaining_balance": remaining_balance,
+                        "extra_adjustment": extra_adjustment,
                         "note": note,
                     }
                 )
-            return redirect(reverse("clients:balance", args=[client.pk]))
+                
+                # Update pending if balance decreased from previous
+                if new_balance < previous_balance:
+                    update_pending_from_balance_change(client_exchange, previous_balance, new_balance)
+            
+            return redirect(reverse("clients:balance", args=[client.pk]) + (f"?exchange={client_exchange_id}" if client_exchange_id else ""))
     
     # Check if editing a balance
     edit_balance_id = request.GET.get("edit_balance")
     edit_balance = None
     if edit_balance_id:
         try:
-            edit_balance = ClientDailyBalance.objects.get(pk=edit_balance_id, client=client)
+            edit_balance = ClientDailyBalance.objects.get(pk=edit_balance_id, client_exchange__client=client)
         except ClientDailyBalance.DoesNotExist:
+            pass
+    
+    # Get filter for exchange
+    selected_exchange_id = request.GET.get("exchange")
+    selected_exchange = None
+    if selected_exchange_id:
+        try:
+            selected_exchange = ClientExchange.objects.get(pk=selected_exchange_id, client=client)
+        except ClientExchange.DoesNotExist:
             pass
     
     # Calculate balances per client-exchange
     client_exchanges = client.client_exchanges.select_related("exchange").all()
+    
+    # Filter by selected exchange if provided
+    if selected_exchange:
+        client_exchanges = client_exchanges.filter(pk=selected_exchange.pk)
+    
+    # Get system settings for calculations
+    settings = SystemSettings.load()
+    
     exchange_balances = []
     
     for client_exchange in client_exchanges:
@@ -1509,6 +1878,26 @@ def client_balance(request, client_pk):
         client_net = total_funding + client_profit_share - client_loss_share
         you_net = your_profit_share - your_loss_share
         
+        # Get daily balance records for this exchange
+        daily_balances = ClientDailyBalance.objects.filter(
+            client_exchange=client_exchange
+        ).order_by("-date")[:10]  # Last 10 records per exchange
+        
+        # Get latest daily balance record (most recent)
+        latest_balance_record = ClientDailyBalance.objects.filter(
+            client_exchange=client_exchange
+        ).order_by("-date").first()
+        
+        # Calculate profit/loss using new logic
+        profit_loss_data = calculate_client_profit_loss(client_exchange)
+        admin_data = calculate_admin_profit_loss(profit_loss_data["client_profit_loss"], settings)
+        
+        # Total balance in exchange account (recorded + extra adjustment)
+        if latest_balance_record:
+            total_balance_in_exchange = latest_balance_record.remaining_balance + (latest_balance_record.extra_adjustment or Decimal(0))
+        else:
+            total_balance_in_exchange = client_net
+        
         exchange_balances.append({
             "client_exchange": client_exchange,
             "exchange": client_exchange.exchange,
@@ -1519,17 +1908,58 @@ def client_balance(request, client_pk):
             "you_net": you_net,
             "pending_client_owes": your_loss_share,
             "pending_you_owe": client_profit_share,
+            "daily_balances": daily_balances,
+            "latest_balance_record": latest_balance_record,
+            "total_balance_in_exchange": total_balance_in_exchange,
+            # New profit/loss calculations with separate ledgers
+            "client_profit_loss": profit_loss_data["client_profit_loss"],
+            "is_profit": profit_loss_data["is_profit"],
+            "pending_amount": profit_loss_data["pending_amount"],  # Separate ledger
+            "admin_profit": admin_data["admin_profit"],
+            "admin_loss": admin_data["admin_loss"],
+            "company_share_profit": admin_data["company_share_profit"],
+            "company_share_loss": admin_data["company_share_loss"],
+            "admin_net": admin_data["admin_net"],
+            "admin_bears": admin_data.get("admin_bears", Decimal(0)),
         })
     
-    # Get daily balance records
-    daily_balances = ClientDailyBalance.objects.filter(client=client).order_by("-date")[:30]
+    # Get all daily balances for the client (for summary view)
+    daily_balance_qs = ClientDailyBalance.objects.filter(
+        client_exchange__client=client
+    ).select_related("client_exchange", "client_exchange__exchange")
+    
+    # Filter daily balances by selected exchange if provided
+    if selected_exchange:
+        daily_balance_qs = daily_balance_qs.filter(client_exchange=selected_exchange)
+    
+    all_daily_balances = daily_balance_qs.order_by("-date")[:30]
+    
+    # Calculate total balance across all exchanges (or selected exchange)
+    total_balance_all_exchanges = Decimal(0)
+    for bal in exchange_balances:
+        total_balance_all_exchanges += Decimal(str(bal["total_balance_in_exchange"]))
+    
+    # Get all client exchanges for the dropdown (not filtered)
+    all_client_exchanges = client.client_exchanges.select_related("exchange").all()
+    
+    # Get selected exchange name for display
+    selected_exchange_name = None
+    if selected_exchange and exchange_balances:
+        selected_exchange_name = exchange_balances[0]["exchange"].name
     
     context = {
         "client": client,
         "exchange_balances": exchange_balances,
-        "daily_balances": daily_balances,
+        "all_daily_balances": all_daily_balances,
+        "total_balance_all_exchanges": total_balance_all_exchanges,
         "today": date.today(),
         "edit_balance": edit_balance,
+        "edit_balance_id": edit_balance_id,
+        "client_exchanges": client_exchanges,  # Filtered exchanges for display
+        "all_client_exchanges": all_client_exchanges,  # All exchanges for dropdown
+        "selected_exchange_id": int(selected_exchange_id) if selected_exchange_id else None,
+        "selected_exchange_name": selected_exchange_name,
+        "settings": settings,
     }
     return render(request, "core/clients/balance.html", context)
 

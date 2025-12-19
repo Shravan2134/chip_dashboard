@@ -10,12 +10,28 @@
 
 {% block content %}
 <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border); margin-bottom: 24px;">
-    <form method="get" style="display: flex; gap: 12px; align-items: center;">
-        <input type="text" name="search" value="{{ search_query }}" class="field-input" placeholder="Search clients by name or code..." style="flex: 1; max-width: 400px;">
-        <button type="submit" class="btn btn-primary">Search</button>
-        {% if search_query %}
-            <a href="{% url 'clients:list' %}" class="btn">Clear</a>
-        {% endif %}
+    <form method="get" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+        <div style="flex: 1; min-width: 200px;">
+            <label class="field-label" style="margin-bottom: 6px;">Search Client</label>
+            <input type="text" name="client_search" value="{{ client_search }}" class="field-input" placeholder="Client name or code..." style="width: 100%;">
+        </div>
+        <div style="flex: 1; min-width: 200px;">
+            <label class="field-label" style="margin-bottom: 6px;">Search Exchange</label>
+            <select name="exchange" class="field-input" style="width: 100%;">
+                <option value="">All Exchanges</option>
+                {% for exchange in all_exchanges %}
+                    <option value="{{ exchange.pk }}" {% if selected_exchange == exchange.pk %}selected{% endif %}>
+                        {{ exchange.name }}{% if exchange.code %} ({{ exchange.code }}){% endif %}
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: flex-end;">
+            <button type="submit" class="btn btn-primary">Search</button>
+            {% if client_search or selected_exchange %}
+                <a href="{% url 'clients:list' %}" class="btn">Clear</a>
+            {% endif %}
+        </div>
     </form>
 </div>
 

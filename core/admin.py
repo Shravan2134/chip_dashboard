@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Exchange, ClientExchange, Transaction, DailyBalanceSnapshot, CompanyShareRecord, SystemSettings, ClientDailyBalance
+from .models import Client, Exchange, ClientExchange, Transaction, DailyBalanceSnapshot, CompanyShareRecord, SystemSettings, ClientDailyBalance, PendingAmount
 
 
 @admin.register(Client)
@@ -61,10 +61,18 @@ class CompanyShareRecordAdmin(admin.ModelAdmin):
 
 @admin.register(ClientDailyBalance)
 class ClientDailyBalanceAdmin(admin.ModelAdmin):
-    list_display = ("date", "client", "remaining_balance", "note", "created_at")
-    list_filter = ("date", "client")
+    list_display = ("date", "client_exchange", "remaining_balance", "note", "created_at")
+    list_filter = ("date", "client_exchange__client", "client_exchange__exchange")
     date_hierarchy = "date"
-    search_fields = ("client__name", "client__code", "note")
+    search_fields = ("client_exchange__client__name", "client_exchange__client__code", "client_exchange__exchange__name", "note")
+
+
+@admin.register(PendingAmount)
+class PendingAmountAdmin(admin.ModelAdmin):
+    list_display = ("client_exchange", "pending_amount", "note", "created_at", "updated_at")
+    list_filter = ("client_exchange__client", "client_exchange__exchange")
+    search_fields = ("client_exchange__client__name", "client_exchange__client__code", "client_exchange__exchange__name", "note")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(SystemSettings)

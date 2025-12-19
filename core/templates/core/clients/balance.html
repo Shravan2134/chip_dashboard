@@ -21,16 +21,37 @@
             <input type="hidden" name="balance_id" value="{{ edit_balance.pk }}">
         {% endif %}
         <div>
+            <label class="field-label">Exchange *</label>
+            <select name="client_exchange" id="form-exchange-select" class="field-input" required style="width: auto; min-width: 200px;" {% if edit_balance %}disabled{% endif %} onchange="filterByExchange(this.value)">
+                <option value="">Select Exchange</option>
+                {% for ce in all_client_exchanges %}
+                    <option value="{{ ce.pk }}" {% if edit_balance and ce.pk == edit_balance.client_exchange.pk %}selected{% elif selected_exchange_id == ce.pk %}selected{% endif %}>
+                        {{ ce.exchange.name }}{% if ce.exchange.code %} ({{ ce.exchange.code }}){% endif %}
+                    </option>
+                {% endfor %}
+            </select>
+            {% if edit_balance %}
+                <input type="hidden" name="client_exchange" value="{{ edit_balance.client_exchange.pk }}">
+            {% endif %}
+            <div id="balance-loading" style="display: none; font-size: 12px; color: var(--accent); margin-top: 4px;">Loading balance data...</div>
+        </div>
+        <div>
             <label class="field-label">Date *</label>
-            <input type="date" name="date" class="field-input" value="{% if edit_balance %}{{ edit_balance.date|date:'Y-m-d' }}{% else %}{{ today|date:'Y-m-d' }}{% endif %}" required style="width: auto;">
+            <input type="date" name="date" id="balance-date" class="field-input" value="{% if edit_balance %}{{ edit_balance.date|date:'Y-m-d' }}{% else %}{{ today|date:'Y-m-d' }}{% endif %}" required style="width: auto;">
         </div>
         <div>
             <label class="field-label">Remaining Balance (₹) *</label>
-            <input type="number" name="remaining_balance" class="field-input" step="0.01" min="0" value="{% if edit_balance %}{{ edit_balance.remaining_balance }}{% endif %}" required placeholder="0.00" style="width: auto; min-width: 150px;">
+            <input type="number" name="remaining_balance" id="balance-amount" class="field-input" step="0.01" min="0" value="{% if edit_balance %}{{ edit_balance.remaining_balance }}{% endif %}" required placeholder="0.00" style="width: auto; min-width: 150px;">
+            <div id="calculated-balance-hint" style="display: none; font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
+        </div>
+        <div>
+            <label class="field-label">Extra Adjustment (₹)</label>
+            <input type="number" name="extra_adjustment" id="extra-adjustment" class="field-input" step="0.01" min="0" value="{% if edit_balance %}{{ edit_balance.extra_adjustment|default:0 }}{% else %}0{% endif %}" placeholder="0.00" style="width: auto; min-width: 150px;">
+            <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Extra money if exchange balance is low</div>
         </div>
         <div style="flex: 1; min-width: 200px;">
             <label class="field-label">Note (Optional)</label>
-            <input type="text" name="note" class="field-input" value="{% if edit_balance %}{{ edit_balance.note }}{% endif %}" placeholder="Add a note about this balance">
+            <input type="text" name="note" id="balance-note" class="field-input" value="{% if edit_balance %}{{ edit_balance.note }}{% endif %}" placeholder="Add a note about this balance">
         </div>
         <div>
             <button type="submit" class="btn btn-primary">{% if edit_balance %}Update Balance{% else %}Record Balance{% endif %}</button>
@@ -41,32 +62,36 @@
     </form>
 </div>
 
-<!-- Daily Balance History -->
-{% if daily_balances %}
+
+<!-- Daily Balance History Summary -->
+{% if all_daily_balances %}
 <div class="table-wrapper mb-3">
     <div class="table-header">
-        <div>Daily Balance History (Latest 30 records)</div>
+        <div>Daily Balance History{% if selected_exchange_name %} - {{ selected_exchange_name }}{% else %} - All Exchanges{% endif %} (Latest 30 records)</div>
     </div>
     <table>
         <thead>
         <tr>
             <th>Date</th>
+            <th>Exchange</th>
             <th>Remaining Balance</th>
             <th>Note</th>
             <th>Actions</th>
         </tr>
         </thead>
         <tbody>
-        {% for balance in daily_balances %}
-            <tr>
+            {% for balance in all_daily_balances %}
+            <tr class="daily-balance-row" data-exchange-id="{{ balance.client_exchange.pk }}">
                 <td><strong>{{ balance.date }}</strong></td>
+                <td><strong>{{ balance.client_exchange.exchange.name }}{% if balance.client_exchange.exchange.code %} ({{ balance.client_exchange.exchange.code }}){% endif %}</strong></td>
                 <td><strong style="font-size: 18px; color: var(--accent);">₹ {{ balance.remaining_balance }}</strong></td>
+                <td>{% if balance.extra_adjustment %}<strong style="color: var(--success);">+ ₹ {{ balance.extra_adjustment }}</strong>{% else %}—{% endif %}</td>
                 <td>{{ balance.note|default:"—" }}</td>
                 <td>
                     <a href="?edit_balance={{ balance.pk }}" class="btn btn-sm">Edit</a>
                 </td>
             </tr>
-        {% endfor %}
+            {% endfor %}
         </tbody>
     </table>
 </div>
@@ -75,14 +100,28 @@
 <div class="card-grid">
     <div class="card">
         <div class="card-title">Total Exchanges</div>
-        <div class="card-value">{{ exchange_balances|length }}</div>
+        <div class="card-value" id="total-exchanges-count">{{ exchange_balances|length }}</div>
+    </div>
+    <div class="card">
+        <div class="card-title" id="balance-card-title">
+            {% if selected_exchange_name %}
+                Total Balance ({{ selected_exchange_name }})
+            {% else %}
+                Total Balance (All Exchanges)
+            {% endif %}
+        </div>
+        <div class="card-value" id="total-balance-display" style="color: var(--accent); font-size: 28px;">₹ {{ total_balance_all_exchanges|default:0 }}</div>
     </div>
 </div>
 
+<div id="exchange-balances-container">
 {% for balance in exchange_balances %}
-<div class="table-wrapper mt-3">
-    <div class="table-header">
+<div class="table-wrapper mt-3 exchange-balance-section" data-exchange-id="{{ balance.client_exchange.pk }}">
+    <div class="table-header" style="display: flex; justify-content: space-between; align-items: center;">
         <div><strong>{{ balance.exchange.name }}</strong> - Balance Summary</div>
+        <div style="font-size: 24px; font-weight: 700; color: var(--accent);">
+            Total Balance: ₹ {{ balance.total_balance_in_exchange|default:balance.client_net }}
+        </div>
     </div>
     <table>
         <thead>
@@ -92,6 +131,21 @@
         </tr>
         </thead>
         <tbody>
+        <tr style="background: var(--accent-soft);">
+            <td><strong>Total Balance in Exchange Account</strong></td>
+            <td><strong style="font-size: 20px; color: var(--accent);">₹ {{ balance.total_balance_in_exchange|default:balance.client_net }}</strong></td>
+        </tr>
+        {% if balance.latest_balance_record %}
+        <tr>
+            <td style="font-size: 12px; color: var(--muted);">Last Recorded Balance ({{ balance.latest_balance_record.date }})</td>
+            <td style="font-size: 12px; color: var(--muted);">₹ {{ balance.latest_balance_record.remaining_balance }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td style="font-size: 12px; color: var(--muted);">Calculated from Transactions</td>
+            <td style="font-size: 12px; color: var(--muted);">₹ {{ balance.client_net }}</td>
+        </tr>
+        {% endif %}
         <tr>
             <td>Total Funding</td>
             <td><strong>₹ {{ balance.total_funding }}</strong></td>
@@ -120,10 +174,116 @@
             <td>Pending: You Owe Client</td>
             <td style="color: var(--success);">₹ {{ balance.pending_you_owe }}</td>
         </tr>
+        <tr style="background: rgba(255, 0, 0, 0.05); border-top: 2px solid var(--border);">
+            <td><strong>Pending Amount (Separate Ledger)</strong></td>
+            <td><strong style="color: var(--danger); font-size: 18px;">₹ {{ balance.pending_amount|floatformat:2 }}</strong></td>
+        </tr>
+        <tr style="font-size: 12px; color: var(--muted);">
+            <td colspan="2">Pending is separate - only affected by losses and client payments</td>
+        </tr>
         </tbody>
     </table>
+    
+    <!-- Profit/Loss Calculation Section -->
+    <div style="margin-top: 20px; padding: 16px; background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--border);">
+        <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Profit/Loss Calculation</h3>
+        <table style="font-size: 14px;">
+            <tbody>
+            <tr>
+                <td><strong>Total Admin Funding</strong></td>
+                <td><strong>₹ {{ balance.total_funding }}</strong></td>
+            </tr>
+            <tr>
+                <td>Exchange Balance (Recorded + Extra)</td>
+                <td>₹ {{ balance.total_balance_in_exchange }}</td>
+            </tr>
+            {% if balance.latest_balance_record and balance.latest_balance_record.extra_adjustment %}
+            <tr style="font-size: 12px; color: var(--muted);">
+                <td>Extra Adjustment</td>
+                <td>+ ₹ {{ balance.latest_balance_record.extra_adjustment }}</td>
+            </tr>
+            {% endif %}
+            <tr style="border-top: 2px solid var(--border); padding-top: 8px;">
+                <td><strong>Client Profit/Loss</strong></td>
+                <td>
+                    <strong style="color: {% if balance.is_profit %}var(--success){% else %}var(--danger){% endif %}; font-size: 18px;">
+                        {% if balance.is_profit %}+{% endif %}₹ {{ balance.client_profit_loss }}
+                    </strong>
+                    {% if balance.is_profit %}
+                        <span style="color: var(--success); margin-left: 8px;">(Client in Profit)</span>
+                    {% else %}
+                        <span style="color: var(--danger); margin-left: 8px;">(Client in Loss)</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% if balance.is_profit %}
+            <!-- Client in Profit - Admin Loss -->
+            <tr style="background: rgba(255, 0, 0, 0.05);">
+                <td>Admin Loss ({{ settings.admin_loss_pct }}% of profit)</td>
+                <td style="color: var(--danger);">₹ {{ balance.admin_loss }}</td>
+            </tr>
+            <tr style="font-size: 12px; color: var(--muted);">
+                <td>Company Share ({{ settings.company_share_on_loss_pct }}% of admin loss)</td>
+                <td>₹ {{ balance.company_share_loss }}</td>
+            </tr>
+            <tr>
+                <td><strong>Admin Bears (After Company Share)</strong></td>
+                <td><strong style="color: var(--danger);">₹ {{ balance.admin_bears }}</strong></td>
+            </tr>
+            {% else %}
+            <!-- Client in Loss - Admin Profit -->
+            <tr style="background: rgba(0, 255, 0, 0.05);">
+                <td>Admin Profit ({{ settings.admin_profit_pct }}% of loss)</td>
+                <td style="color: var(--success);">₹ {{ balance.admin_profit }}</td>
+            </tr>
+            <tr style="font-size: 12px; color: var(--muted);">
+                <td>Company Share ({{ settings.company_share_on_profit_pct }}% of admin profit)</td>
+                <td>₹ {{ balance.company_share_profit }}</td>
+            </tr>
+            <tr style="font-size: 12px; color: var(--muted);">
+                <td>Admin Keeps</td>
+                <td>₹ {{ balance.admin_net }}</td>
+            </tr>
+            {% endif %}
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Daily Balance Records for this Exchange -->
+    {% if balance.daily_balances %}
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
+        <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Daily Balance Records (Last 10)</h3>
+        <table style="font-size: 14px;">
+            <thead>
+            <tr>
+                <th>Date</th>
+                <th>Remaining Balance</th>
+                <th>Note</th>
+                <th>Actions</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for daily_balance in balance.daily_balances %}
+                <tr>
+                    <td>{{ daily_balance.date }}</td>
+                    <td><strong style="color: var(--accent);">₹ {{ daily_balance.remaining_balance }}</strong></td>
+                    <td>{{ daily_balance.note|default:"—" }}</td>
+                    <td>
+                        <a href="?edit_balance={{ daily_balance.pk }}" class="btn btn-sm">Edit</a>
+                    </td>
+                </tr>
+            {% empty %}
+                <tr>
+                    <td colspan="4" style="text-align: center; color: var(--muted); padding: 20px;">No daily balance records yet for this exchange.</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
 </div>
 {% endfor %}
+</div>
 
 {% if exchange_balances|length == 0 %}
 <div class="table-wrapper mt-3">
@@ -132,5 +292,76 @@
     </div>
 </div>
 {% endif %}
+
+<script>
+// Filter page by exchange when exchange is selected
+function filterByExchange(clientExchangeId) {
+    if (!clientExchangeId) {
+        // If no exchange selected, go to balance page without filter
+        window.location.href = "{% url 'clients:balance' client.pk %}";
+    } else {
+        // Redirect to balance page with exchange filter
+        window.location.href = "{% url 'clients:balance' client.pk %}?exchange=" + clientExchangeId;
+    }
+}
+
+// Load exchange balance data when exchange is selected in the form
+function loadExchangeBalanceData(clientExchangeId) {
+    if (!clientExchangeId) {
+        // Reset form if no exchange selected
+        document.getElementById('balance-date').value = '{{ today|date:"Y-m-d" }}';
+        document.getElementById('balance-amount').value = '';
+        document.getElementById('balance-note').value = '';
+        document.getElementById('balance-loading').style.display = 'none';
+        document.getElementById('calculated-balance-hint').style.display = 'none';
+        return;
+    }
+    
+    const loadingDiv = document.getElementById('balance-loading');
+    const dateInput = document.getElementById('balance-date');
+    const amountInput = document.getElementById('balance-amount');
+    const noteInput = document.getElementById('balance-note');
+    const hintDiv = document.getElementById('calculated-balance-hint');
+    
+    loadingDiv.style.display = 'block';
+    
+    // Make AJAX request to get latest balance
+    fetch(`{% url 'clients:get_latest_balance' client.pk %}?client_exchange_id=${clientExchangeId}`)
+        .then(response => response.json())
+        .then(data => {
+            loadingDiv.style.display = 'none';
+            
+            if (data.success) {
+                // Update form fields
+                dateInput.value = data.date;
+                amountInput.value = data.remaining_balance;
+                noteInput.value = data.note || '';
+                
+                // Show calculated balance hint if different from recorded
+                if (data.has_recorded_balance && data.calculated_balance !== data.remaining_balance) {
+                    hintDiv.textContent = `Calculated balance from transactions: ₹ ${parseFloat(data.calculated_balance).toLocaleString('en-IN')}`;
+                    hintDiv.style.display = 'block';
+                } else if (!data.has_recorded_balance) {
+                    hintDiv.textContent = `Using calculated balance from transactions`;
+                    hintDiv.style.display = 'block';
+                } else {
+                    hintDiv.style.display = 'none';
+                }
+            } else {
+                // Error loading data
+                hintDiv.textContent = 'Error loading balance data';
+                hintDiv.style.color = 'var(--danger)';
+                hintDiv.style.display = 'block';
+            }
+        })
+        .catch(error => {
+            loadingDiv.style.display = 'none';
+            hintDiv.textContent = 'Error loading balance data';
+            hintDiv.style.color = 'var(--danger)';
+            hintDiv.style.display = 'block';
+            console.error('Error:', error);
+        });
+}
+</script>
 {% endblock %}
 

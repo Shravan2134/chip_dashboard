@@ -17,6 +17,7 @@ class Client(TimeStampedModel):
 
     name = models.CharField(max_length=255)
     code = models.CharField(max_length=50, unique=True, blank=True, null=True)
+    referred_by = models.CharField(max_length=255, blank=True, null=True, help_text="Name of person who referred this client")
     is_active = models.BooleanField(default=True)
 
     def __str__(self) -> str:
@@ -183,21 +184,71 @@ class CompanyShareRecord(TimeStampedModel):
 
 class ClientDailyBalance(TimeStampedModel):
     """
-    Manual daily balance record for clients.
-    Records the remaining balance in client's account for a specific date.
+    Manual daily balance record for client-exchange combinations.
+    Records the remaining balance in client's account for a specific exchange on a specific date.
+    Example: Muktesh's remaining balance in Diamond exchange on 2024-01-15
     """
-    client = models.ForeignKey(Client, related_name="daily_balances", on_delete=models.CASCADE)
+    client_exchange = models.ForeignKey("ClientExchange", related_name="daily_balances", on_delete=models.CASCADE, null=True, blank=True)
+    # Legacy field - will be removed after migration
+    client = models.ForeignKey(Client, related_name="daily_balances_legacy", on_delete=models.CASCADE, null=True, blank=True)
     date = models.DateField()
-    remaining_balance = models.DecimalField(max_digits=14, decimal_places=2, help_text="Remaining balance in client's account")
+    remaining_balance = models.DecimalField(max_digits=14, decimal_places=2, help_text="Remaining balance in client's account for this exchange")
+    extra_adjustment = models.DecimalField(
+        max_digits=14, 
+        decimal_places=2, 
+        default=0,
+        help_text="Extra money adjustment if exchange balance is low (positive amount)"
+    )
     note = models.TextField(blank=True, help_text="Optional note about the balance")
     
     class Meta:
-        unique_together = ("client", "date")
-        ordering = ["-date"]
+        unique_together = [("client_exchange", "date"), ("client", "date")]  # Support both during migration
+        ordering = ["-date", "client_exchange__exchange__name"]
         verbose_name_plural = "Client Daily Balances"
     
+    @property
+    def client_obj(self):
+        """Get client from either client_exchange or legacy client field."""
+        if self.client_exchange:
+            return self.client_exchange.client
+        return self.client
+    
+    @property
+    def exchange_obj(self):
+        """Get exchange from client_exchange."""
+        if self.client_exchange:
+            return self.client_exchange.exchange
+        return None
+    
     def __str__(self):
-        return f"{self.client.name} - ₹{self.remaining_balance} on {self.date}"
+        if self.client_exchange:
+            return f"{self.client_exchange.client.name} - {self.client_exchange.exchange.name} - ₹{self.remaining_balance} on {self.date}"
+        elif self.client:
+            return f"{self.client.name} - ₹{self.remaining_balance} on {self.date}"
+        return f"Balance - ₹{self.remaining_balance} on {self.date}"
+
+
+class PendingAmount(TimeStampedModel):
+    """
+    Separate ledger for client's unpaid losses.
+    Pending is created only from losses and reduced only when client pays.
+    Pending is NOT affected by funding, profit, or profit payout.
+    """
+    client_exchange = models.ForeignKey("ClientExchange", related_name="pending_amounts", on_delete=models.CASCADE)
+    pending_amount = models.DecimalField(
+        max_digits=14, 
+        decimal_places=2, 
+        default=0,
+        help_text="Total pending amount (unpaid losses) for this client-exchange"
+    )
+    note = models.TextField(blank=True, help_text="Optional note about pending amount")
+    
+    class Meta:
+        unique_together = ("client_exchange",)
+        verbose_name_plural = "Pending Amounts"
+    
+    def __str__(self):
+        return f"{self.client_exchange} - Pending: ₹{self.pending_amount}"
 
 
 class SystemSettings(models.Model):
@@ -212,6 +263,32 @@ class SystemSettings(models.Model):
         choices=[(0, "Monday"), (1, "Tuesday"), (2, "Wednesday"), (3, "Thursday"), (4, "Friday"), (5, "Saturday"), (6, "Sunday")]
     )
     auto_generate_weekly_reports = models.BooleanField(default=False, help_text="Automatically generate weekly reports")
+    
+    # Admin Profit/Loss Configuration
+    admin_profit_pct = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=11.00,
+        help_text="Admin profit percentage on client loss (%)"
+    )
+    admin_loss_pct = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=10.00,
+        help_text="Admin loss percentage on client profit (%)"
+    )
+    company_share_on_profit_pct = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=40.00,
+        help_text="Company share percentage from admin profit (%)"
+    )
+    company_share_on_loss_pct = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=50.00,
+        help_text="Company share percentage from admin loss (%)"
+    )
     
     class Meta:
         verbose_name_plural = "System Settings"
