@@ -53,7 +53,6 @@
             <th>Type</th>
             <th>Amount</th>
             <th>Your Share</th>
-            <th>Client Share</th>
             <th>Company Share</th>
             <th>Actions</th>
         </tr>
@@ -81,7 +80,6 @@
                 </td>
                 <td><strong>₹ {{ tx.amount }}</strong></td>
                 <td>₹ {{ tx.your_share_amount|default:0 }}</td>
-                <td>₹ {{ tx.client_share_amount|default:0 }}</td>
                 <td>₹ {{ tx.company_share_amount|default:0 }}</td>
                 <td>
                     <a href="{% url 'transactions:detail' tx.pk %}" class="btn btn-sm" style="margin-right: 4px;">View</a>
@@ -90,7 +88,7 @@
             </tr>
         {% empty %}
             <tr>
-                <td colspan="8">No transactions recorded yet.</td>
+                <td colspan="7">No transactions recorded yet.</td>
             </tr>
         {% endfor %}
         </tbody>

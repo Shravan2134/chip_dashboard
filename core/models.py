@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 from django.utils import timezone
 
 
@@ -15,11 +16,15 @@ class TimeStampedModel(models.Model):
 class Client(TimeStampedModel):
     """Represents an end client that receives funds via different exchanges."""
 
+    user = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="clients", null=True, blank=True, help_text="User who owns this client")
     name = models.CharField(max_length=255)
-    code = models.CharField(max_length=50, unique=True, blank=True, null=True)
+    code = models.CharField(max_length=50, blank=True, null=True, help_text="Client code (unique per user)")
     referred_by = models.CharField(max_length=255, blank=True, null=True, help_text="Name of person who referred this client")
     is_active = models.BooleanField(default=True)
     is_company_client = models.BooleanField(default=False, help_text="If True, this is a company client. If False, this is your personal client.")
+
+    class Meta:
+        unique_together = [("user", "code")]  # Code must be unique per user
 
     def __str__(self) -> str:
         if self.code:

@@ -363,6 +363,7 @@
     </script>
 </head>
 <body>
+{% if user.is_authenticated %}
 <div class="layout">
     <aside class="sidebar">
         <div class="brand">
@@ -421,26 +422,14 @@
                     <span>Reports</span>
                 </a>
             </li>
-            <li class="nav-item">
-                <a href="{% url 'company_share:summary' %}" class="nav-link {% if request.resolver_match.namespace == 'company_share' %}active{% endif %}">
-                    <span class="nav-icon">🏢</span>
-                    <span>Company Share</span>
-                </a>
-            </li>
         </ul>
 
         <div class="nav-section-label">System</div>
         <ul class="nav">
             <li class="nav-item">
-                <a href="{% url 'settings' %}" class="nav-link {% if request.resolver_match.url_name == 'settings' %}active{% endif %}">
-                    <span class="nav-icon">⚙️</span>
-                    <span>Settings</span>
-                </a>
-            </li>
-            <li class="nav-item">
-                <a href="/admin/" class="nav-link">
-                    <span class="nav-icon">🔧</span>
-                    <span>Admin</span>
+                <a href="{% url 'logout' %}" class="nav-link">
+                    <span class="nav-icon">🚪</span>
+                    <span>Logout</span>
                 </a>
             </li>
         </ul>
@@ -469,6 +458,9 @@
         {% block content %}{% endblock %}
     </main>
 </div>
+{% else %}
+    {% block unauthenticated_content %}{% endblock %}
+{% endif %}
 </body>
 </html>
 

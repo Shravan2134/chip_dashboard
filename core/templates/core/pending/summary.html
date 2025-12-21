@@ -463,6 +463,7 @@
                 <th>Exchange</th>
                 <th>Total Funding</th>
                 <th>Exchange Balance</th>
+                <th>My Share</th>
                 <th>Client Profit (Payable)</th>
                 <th>Actions</th>
             </tr>
@@ -479,6 +480,7 @@
                     <td>{{ item.exchange_name }}</td>
                     <td>₹ {{ item.total_funding|floatformat:2 }}</td>
                     <td>₹ {{ item.exchange_balance|floatformat:2 }}</td>
+                    <td><span class="amount-value">₹ {{ item.my_share|default:0|floatformat:2 }}</span></td>
                     <td><span class="amount-value">₹ {{ item.client_profit|floatformat:2 }}</span></td>
                     <td>
                         <button onclick="showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name }}', '{{ item.exchange_name }}', {{ item.client_profit }}, 'admin_pays_profit')" class="action-button">
@@ -488,7 +490,7 @@
                 </tr>
             {% empty %}
                 <tr>
-                    <td colspan="7" class="empty-state">You don't owe any clients for the selected period.</td>
+                    <td colspan="8" class="empty-state">You don't owe any clients for the selected period.</td>
                 </tr>
             {% endfor %}
             </tbody>

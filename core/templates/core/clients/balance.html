@@ -178,12 +178,12 @@
         </tr>
         {% if balance.is_profit %}
         <tr style="background: rgba(239, 68, 68, 0.05);">
-            <td>Admin Pays ({{ settings.admin_profit_share_pct }}% of profit)</td>
+            <td>Admin Pays ({{ balance.admin_profit_share_pct_used|default:settings.admin_profit_share_pct }}% of profit)</td>
             <td style="color: var(--danger);">₹ {{ balance.admin_pays|default:balance.admin_loss|floatformat:2 }}</td>
         </tr>
         {% if client_type == 'company' %}
         <tr>
-            <td>Company Pays ({{ settings.company_profit_share_pct }}% of profit)</td>
+            <td>Company Pays ({{ balance.company_share_pct }}% of client's share)</td>
             <td>₹ {{ balance.company_pays|default:balance.company_share_loss|floatformat:2 }}</td>
         </tr>
         {% endif %}
@@ -280,6 +280,7 @@
                     {% if client_type == 'company' %}
                     <th>Company Share</th>
                     {% endif %}
+                    <th>Recorded Balance</th>
                     <th>Note</th>
                     <th>Actions</th>
                 </tr>
@@ -308,6 +309,16 @@
                         {% if client_type == 'company' %}
                         <td>₹ {{ tx.company_share_amount|floatformat:2 }}</td>
                         {% endif %}
+                        <td>
+                            {% if tx.recorded_balance %}
+                                <strong style="color: var(--accent);">₹ {{ tx.recorded_balance.remaining_balance|floatformat:2 }}</strong>
+                                {% if tx.recorded_balance.extra_adjustment %}
+                                    <span style="color: var(--success); font-size: 12px;">(+ ₹ {{ tx.recorded_balance.extra_adjustment|floatformat:2 }})</span>
+                                {% endif %}
+                            {% else %}
+                                <span style="color: var(--muted);">—</span>
+                            {% endif %}
+                        </td>
                         <td style="color: var(--muted); font-size: 13px;">{{ tx.note|default:"—"|truncatewords:10 }}</td>
                         <td>
                             <a href="{% url 'transactions:detail' tx.pk %}" class="btn btn-sm">View Details</a>

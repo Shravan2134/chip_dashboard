@@ -5,99 +5,306 @@
 {% block page_subtitle %}Comprehensive insights into your business performance{% endblock %}
 
 {% block content %}
+<style>
+    .reports-wrapper {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+    }
+    
+    .section-header {
+        margin-bottom: 16px;
+    }
+    
+    .section-header h3 {
+        font-size: 16px;
+        font-weight: 600;
+        color: #111827;
+        margin: 0 0 4px 0;
+    }
+    
+    .section-header p {
+        font-size: 13px;
+        color: #6b7280;
+        margin: 0;
+    }
+    
+    .time-travel-section {
+        background: #f9fafb;
+        border-radius: 6px;
+        padding: 20px;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .time-travel-form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 12px;
+        align-items: end;
+    }
+    
+    .form-group-compact {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .form-group-compact label {
+        font-size: 12px;
+        font-weight: 500;
+        color: #374151;
+        margin-bottom: 6px;
+    }
+    
+    .form-group-compact input {
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        font-size: 14px;
+        background: #ffffff;
+    }
+    
+    .btn-compact {
+        padding: 8px 16px;
+        font-size: 13px;
+        border-radius: 4px;
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        color: #111827;
+        cursor: pointer;
+        font-weight: 500;
+    }
+    
+    .btn-compact-primary {
+        background: #111827;
+        color: #ffffff;
+        border-color: #111827;
+    }
+    
+    .btn-compact:hover {
+        background: #f3f4f6;
+    }
+    
+    .btn-compact-primary:hover {
+        background: #374151;
+    }
+    
+    .tabs-simple {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid #e5e7eb;
+        margin-bottom: 24px;
+    }
+    
+    .tab-simple {
+        padding: 12px 24px;
+        text-decoration: none;
+        color: #6b7280;
+        font-size: 14px;
+        font-weight: 500;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: all 0.2s;
+    }
+    
+    .tab-simple:hover {
+        color: #111827;
+    }
+    
+    .tab-simple.active {
+        color: #111827;
+        border-bottom-color: #111827;
+    }
+    
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        margin-bottom: 32px;
+    }
+    
+    .stat-box {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 20px;
+    }
+    
+    .stat-label {
+        font-size: 11px;
+        font-weight: 500;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+    }
+    
+    .stat-value {
+        font-size: 24px;
+        font-weight: 700;
+        color: #111827;
+        margin-bottom: 4px;
+    }
+    
+    .stat-note {
+        font-size: 12px;
+        color: #9ca3af;
+    }
+    
+    .chart-section {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+    
+    .chart-header {
+        font-size: 15px;
+        font-weight: 600;
+        color: #111827;
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #f3f4f6;
+    }
+    
+    .charts-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+        gap: 20px;
+        margin-bottom: 20px;
+    }
+    
+    .time-travel-info {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid #e5e7eb;
+        font-size: 13px;
+        color: #6b7280;
+    }
+</style>
+
 <!-- Chart.js Library -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
+<div class="reports-wrapper">
 <!-- Time Travel Section -->
-<div style="background: var(--bg-content); border-radius: 8px; padding: 16px; border: 1px solid var(--border); margin-bottom: 24px; opacity: 0.7;">
-    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
-        <div>
-            <h2 style="font-size: 16px; font-weight: 400; margin: 0 0 4px 0; color: var(--muted);">Time Travel Report</h2>
-            <p style="margin: 0; font-size: 12px; color: var(--muted);">View historical data for any date range</p>
-        </div>
-        <form method="get" style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
-            <input type="hidden" name="report_type" value="{{ report_type }}">
-            <div>
-                <label class="field-label" style="margin: 0 0 4px 0; font-size: 13px;">Start Date</label>
-                <input type="date" name="start_date" value="{{ start_date_str|default:'' }}" class="field-input" style="min-width: 150px; font-size: 14px;">
+<div class="time-travel-section">
+    <div class="section-header">
+        <h3>Time Travel Report</h3>
+        <p>View historical data for any date range</p>
+    </div>
+    <form method="get">
+        <input type="hidden" name="report_type" value="{{ report_type }}">
+        {% if client_type_filter %}<input type="hidden" name="client_type" value="{{ client_type_filter }}">{% endif %}
+        {% if selected_client_id %}<input type="hidden" name="client" value="{{ selected_client_id }}">{% endif %}
+        <div class="time-travel-form-row">
+            <div class="form-group-compact">
+                <label>Start Date</label>
+                <input type="date" name="start_date" value="{{ start_date_str|default:'' }}">
             </div>
-            <div>
-                <label class="field-label" style="margin: 0 0 4px 0; font-size: 13px;">End Date</label>
-                <input type="date" name="end_date" value="{{ end_date_str|default:'' }}" class="field-input" style="min-width: 150px; font-size: 14px;">
+            <div class="form-group-compact">
+                <label>End Date</label>
+                <input type="date" name="end_date" value="{{ end_date_str|default:'' }}">
             </div>
             <div style="display: flex; gap: 8px;">
-                <button type="submit" class="btn {% if time_travel_mode %}btn-primary{% endif %}" style="{% if time_travel_mode %}background: var(--accent); color: white;{% else %}background: #3b82f6; color: white;{% endif %} font-size: 14px;">View Report</button>
+                <button type="submit" class="btn-compact btn-compact-primary">View Report</button>
                 {% if time_travel_mode %}
-                <a href="?report_type={{ report_type }}" class="btn" style="font-size: 14px;">Clear</a>
+                <a href="?report_type={{ report_type }}{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}" class="btn-compact">Clear</a>
                 {% endif %}
             </div>
-        </form>
-    </div>
-    {% if time_travel_mode %}
-    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
-        <div style="font-size: 13px; color: var(--muted);">
-            {% if start_date_str and end_date_str %}
-                Showing data from <strong>{{ start_date_str }}</strong> to <strong>{{ end_date_str }}</strong>
-            {% elif as_of_str %}
-                Showing all data up to <strong>{{ as_of_str }}</strong>
-            {% endif %}
         </div>
+    </form>
+    {% if time_travel_mode %}
+    <div class="time-travel-info">
+        {% if start_date_str and end_date_str %}
+            Showing data from <strong>{{ start_date_str }}</strong> to <strong>{{ end_date_str }}</strong>
+        {% elif as_of_str %}
+            Showing all data up to <strong>{{ as_of_str }}</strong>
+        {% endif %}
     </div>
     {% endif %}
 </div>
 
-<!-- Report Type Tabs -->
-<div style="background: var(--bg-content); border-radius: 8px; padding: 0; border: 1px solid var(--border); margin-bottom: 24px; overflow: hidden;">
-    <div style="display: flex; border-bottom: 1px solid var(--border);">
-        <a href="?report_type=daily" onclick="return changeReportType('daily', event)" style="flex: 1; padding: 16px 20px; text-align: center; text-decoration: none; color: var(--text); border-right: 1px solid var(--border); background: {% if report_type == 'daily' %}#f9fafb{% else %}transparent{% endif %}; font-weight: {% if report_type == 'daily' %}600{% else %}400{% endif %}; font-size: 15px; {% if report_type == 'daily' %}border-bottom: 2px solid var(--accent); margin-bottom: -1px;{% endif %}">
-            Daily Report
-        </a>
-        <a href="?report_type=weekly" onclick="return changeReportType('weekly', event)" style="flex: 1; padding: 16px 20px; text-align: center; text-decoration: none; color: var(--text); border-right: 1px solid var(--border); background: {% if report_type == 'weekly' %}#f9fafb{% else %}transparent{% endif %}; font-weight: {% if report_type == 'weekly' %}600{% else %}400{% endif %}; font-size: 15px; {% if report_type == 'weekly' %}border-bottom: 2px solid var(--accent); margin-bottom: -1px;{% endif %}">
-            Weekly Report
-        </a>
-        <a href="?report_type=monthly" onclick="return changeReportType('monthly', event)" style="flex: 1; padding: 16px 20px; text-align: center; text-decoration: none; color: var(--text); background: {% if report_type == 'monthly' %}#f9fafb{% else %}transparent{% endif %}; font-weight: {% if report_type == 'monthly' %}600{% else %}400{% endif %}; font-size: 15px; {% if report_type == 'monthly' %}border-bottom: 2px solid var(--accent); margin-bottom: -1px;{% endif %}">
-            Monthly Report
-        </a>
-    </div>
+<!-- Client Type Filter Tabs -->
+<div class="tabs-simple" style="margin-bottom: 16px;">
+    <a href="?report_type={{ report_type }}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}" onclick="return changeClientType('', event)" class="tab-simple {% if not client_type_filter %}active{% endif %}">
+        All Clients
+    </a>
+    <a href="?report_type={{ report_type }}&client_type=company{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}" onclick="return changeClientType('company', event)" class="tab-simple {% if client_type_filter == 'company' %}active{% endif %}">
+        Company Clients
+    </a>
+    <a href="?report_type={{ report_type }}&client_type=my{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}" onclick="return changeClientType('my', event)" class="tab-simple {% if client_type_filter == 'my' %}active{% endif %}">
+        My Clients
+    </a>
 </div>
 
-<!-- Summary Cards -->
-<div class="card-grid" style="margin-bottom: 24px;">
-    <div class="card">
-        <div class="card-title">Total Turnover</div>
-        <div class="card-value">₹ {{ total_turnover|default:0|floatformat:2 }}</div>
-        <div style="margin-top: 8px; font-size: 13px; color: var(--muted);">All-time transaction volume</div>
+<!-- Client Selector -->
+<div style="margin-bottom: 20px; display: flex; align-items: center; gap: 12px; padding: 16px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
+    <label style="font-size: 14px; font-weight: 500; color: #374151;">Filter by Client:</label>
+    <select id="clientFilter" onchange="changeClient(this.value)" style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background: #ffffff; min-width: 250px; cursor: pointer;">
+        <option value="">All Clients</option>
+        {% for client in all_clients %}
+        <option value="{{ client.id }}" {% if selected_client_id == client.id %}selected{% endif %}>{{ client.name }}{% if client.code %} ({{ client.code }}){% endif %}</option>
+        {% endfor %}
+    </select>
+    {% if selected_client_id %}
+    <a href="?report_type={{ report_type }}{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" class="btn-compact" style="text-decoration: none;">Clear Client Filter</a>
+    {% endif %}
+    {% if not all_clients %}
+    <span style="font-size: 13px; color: #6b7280; font-style: italic;">No clients available</span>
+    {% endif %}
+</div>
+
+<!-- Report Type Tabs -->
+<div class="tabs-simple">
+    <a href="?report_type=daily{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" onclick="return changeReportType('daily', event)" class="tab-simple {% if report_type == 'daily' %}active{% endif %}">
+        Daily
+    </a>
+    <a href="?report_type=weekly{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" onclick="return changeReportType('weekly', event)" class="tab-simple {% if report_type == 'weekly' %}active{% endif %}">
+        Weekly
+    </a>
+    <a href="?report_type=monthly{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" onclick="return changeReportType('monthly', event)" class="tab-simple {% if report_type == 'monthly' %}active{% endif %}">
+        Monthly
+    </a>
+</div>
+
+<!-- Summary Stats -->
+<div class="stats-grid">
+    <div class="stat-box">
+        <div class="stat-label">Total Turnover</div>
+        <div class="stat-value">₹ {{ total_turnover|default:0|floatformat:2 }}</div>
+        <div class="stat-note">All-time transaction volume</div>
     </div>
-    <div class="card">
-        <div class="card-title">Your Total Profit</div>
-        <div class="card-value positive">₹ {{ your_total_profit|default:0|floatformat:2 }}</div>
-        <div style="margin-top: 8px; font-size: 13px; color: var(--muted);">Your share from profits</div>
+    <div class="stat-box">
+        <div class="stat-label">Your Total Profit</div>
+        <div class="stat-value">₹ {{ your_total_profit|default:0|floatformat:2 }}</div>
+        <div class="stat-note">Your share from profits</div>
     </div>
-    <div class="card">
-        <div class="card-title">Company Profit</div>
-        <div class="card-value">₹ {{ company_profit|default:0|floatformat:2 }}</div>
-        <div style="margin-top: 8px; font-size: 13px; color: var(--muted);">Company share from transactions</div>
+    {% if client_type_filter != 'my' %}
+    <div class="stat-box">
+        <div class="stat-label">Company Profit</div>
+        <div class="stat-value">₹ {{ company_profit|default:0|floatformat:2 }}</div>
+        <div class="stat-note">Company share from transactions</div>
     </div>
+    {% endif %}
 </div>
 
 {% if report_type == 'daily' %}
 <!-- Daily Report Section -->
-<div style="margin-bottom: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Daily Trends (Last 30 Days)</h2>
-        <canvas id="dailyTrendsChart" style="max-height: 400px;"></canvas>
-    </div>
+<div class="chart-section">
+    <div class="chart-header">Daily Trends (Last 30 Days)</div>
+    <canvas id="dailyTrendsChart" style="max-height: 400px;"></canvas>
 </div>
 
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; margin-bottom: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Transaction Type Breakdown</h2>
+<div class="charts-grid">
+    <div class="chart-section">
+        <div class="chart-header">Transaction Type Breakdown</div>
         <canvas id="typeBreakdownChart" style="max-height: 320px;"></canvas>
     </div>
     
     {% if client_labels %}
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Top Clients by Profit (Last 30 Days)</h2>
+    <div class="chart-section">
+        <div class="chart-header">Top Clients by Profit (Last 30 Days)</div>
         <canvas id="topClientsChart" style="max-height: 320px;"></canvas>
     </div>
     {% endif %}
@@ -105,116 +312,45 @@
 
 {% elif report_type == 'weekly' %}
 <!-- Weekly Report Section -->
-<div style="margin-bottom: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Weekly Trends (Last 4 Weeks)</h2>
-        <canvas id="weeklyTrendsChart" style="max-height: 400px;"></canvas>
-    </div>
+<div class="chart-section">
+    <div class="chart-header">Weekly Trends (Last 4 Weeks)</div>
+    <canvas id="weeklyTrendsChart" style="max-height: 400px;"></canvas>
 </div>
 
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; margin-bottom: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Transaction Type Breakdown</h2>
+<div class="charts-grid">
+    <div class="chart-section">
+        <div class="chart-header">Transaction Type Breakdown</div>
         <canvas id="typeBreakdownChart" style="max-height: 320px;"></canvas>
     </div>
     
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Daily Trends (Last 30 Days)</h2>
+    <div class="chart-section">
+        <div class="chart-header">Daily Trends (Last 30 Days)</div>
         <canvas id="dailyTrendsChart" style="max-height: 320px;"></canvas>
     </div>
 </div>
 
 {% elif report_type == 'monthly' %}
 <!-- Monthly Report Section -->
-<div style="margin-bottom: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Monthly Trends (Last 6 Months)</h2>
-        <canvas id="monthlyTrendsChart" style="max-height: 400px;"></canvas>
-    </div>
+<div class="chart-section">
+    <div class="chart-header">Monthly Trends (Last 6 Months)</div>
+    <canvas id="monthlyTrendsChart" style="max-height: 400px;"></canvas>
 </div>
 
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; margin-bottom: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Transaction Type Breakdown</h2>
+<div class="charts-grid">
+    <div class="chart-section">
+        <div class="chart-header">Transaction Type Breakdown</div>
         <canvas id="typeBreakdownChart" style="max-height: 320px;"></canvas>
     </div>
     
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">Weekly Trends (Last 4 Weeks)</h2>
+    <div class="chart-section">
+        <div class="chart-header">Weekly Trends (Last 4 Weeks)</div>
         <canvas id="weeklyTrendsChart" style="max-height: 320px;"></canvas>
     </div>
 </div>
 {% endif %}
-
-<!-- Time Travel Transactions Table -->
-{% if time_travel_mode %}
-<div style="margin-top: 24px;">
-    <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border);">
-        <h2 style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0;">
-            Transactions
-            {% if start_date_str and end_date_str %}
-                ({{ start_date_str }} to {{ end_date_str }})
-            {% elif as_of_str %}
-                (up to {{ as_of_str }})
-            {% endif %}
-        </h2>
-        <div class="table-wrapper">
-            <div class="table-header">
-                <span>Showing latest {{ time_travel_transactions|length }} transactions</span>
-            </div>
-            <table>
-                <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Client</th>
-                    <th>Exchange</th>
-                    <th>Type</th>
-                    <th>Amount</th>
-                    <th>Your Share</th>
-                    <th>Client Share</th>
-                    <th>Company Share</th>
-                </tr>
-                </thead>
-                <tbody>
-                {% for tx in time_travel_transactions %}
-                    <tr>
-                        <td>{{ tx.date }}</td>
-                        <td>{{ tx.client_exchange.client.name }}</td>
-                        <td>{{ tx.client_exchange.exchange.name }}</td>
-                        <td>
-                            {% if tx.transaction_type == 'PROFIT' %}
-                                <span class="badge badge-success">{{ tx.get_transaction_type_display }}</span>
-                            {% elif tx.transaction_type == 'LOSS' %}
-                                <span class="badge badge-muted">{{ tx.get_transaction_type_display }}</span>
-                            {% elif tx.transaction_type == 'FUNDING' %}
-                                <span class="badge badge-muted">{{ tx.get_transaction_type_display }}</span>
-                            {% else %}
-                                <span class="badge badge-muted">{{ tx.get_transaction_type_display }}</span>
-                            {% endif %}
-                        </td>
-                        <td><strong>₹ {{ tx.amount|floatformat:2 }}</strong></td>
-                        <td>₹ {{ tx.your_share_amount|default:0|floatformat:2 }}</td>
-                        <td>₹ {{ tx.client_share_amount|default:0|floatformat:2 }}</td>
-                        <td>₹ {{ tx.company_share_amount|default:0|floatformat:2 }}</td>
-                    </tr>
-                {% empty %}
-                    <tr>
-                        <td colspan="8" style="text-align: center; padding: 40px; color: var(--muted);">
-                            No transactions found
-                            {% if start_date_str and end_date_str %}
-                                between {{ start_date_str }} and {{ end_date_str }}
-                            {% elif as_of_str %}
-                                up to {{ as_of_str }}
-                            {% endif %}
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
 </div>
-{% endif %}
+
+<!-- Time Travel Transactions Table - Hidden during time travel -->
 
 <script>
 // Disable automatic scroll restoration
@@ -232,17 +368,81 @@ function changeReportType(type, event) {
     const startDate = url.searchParams.get('start_date');
     const endDate = url.searchParams.get('end_date');
     const dateParam = url.searchParams.get('date');
+    const clientType = url.searchParams.get('client_type');
+    const clientId = url.searchParams.get('client');
     
     // Build new URL
     url.searchParams.set('report_type', type);
     if (startDate) url.searchParams.set('start_date', startDate);
     if (endDate) url.searchParams.set('end_date', endDate);
     if (dateParam) url.searchParams.set('date', dateParam);
+    if (clientType) url.searchParams.set('client_type', clientType);
+    if (clientId) url.searchParams.set('client', clientId);
     
     // Store scroll position to restore after page load
     sessionStorage.setItem('reportScrollPosition', currentScrollY);
     window.location.href = url.toString();
     return false;
+}
+
+// Preserve scroll position when changing client type
+function changeClientType(type, event) {
+    event.preventDefault();
+    const currentScrollY = window.scrollY || window.pageYOffset;
+    const url = new URL(window.location);
+    
+    // Preserve time travel parameters if they exist
+    const startDate = url.searchParams.get('start_date');
+    const endDate = url.searchParams.get('end_date');
+    const dateParam = url.searchParams.get('date');
+    const reportType = url.searchParams.get('report_type') || 'monthly';
+    const clientId = url.searchParams.get('client');
+    
+    // Build new URL
+    url.searchParams.set('report_type', reportType);
+    if (startDate) url.searchParams.set('start_date', startDate);
+    if (endDate) url.searchParams.set('end_date', endDate);
+    if (dateParam) url.searchParams.set('date', dateParam);
+    if (clientId) url.searchParams.set('client', clientId);
+    if (type) {
+        url.searchParams.set('client_type', type);
+    } else {
+        url.searchParams.delete('client_type');
+    }
+    
+    // Store scroll position to restore after page load
+    sessionStorage.setItem('reportScrollPosition', currentScrollY);
+    window.location.href = url.toString();
+    return false;
+}
+
+// Preserve scroll position when changing client
+function changeClient(clientId) {
+    const currentScrollY = window.scrollY || window.pageYOffset;
+    const url = new URL(window.location);
+    
+    // Preserve all parameters
+    const startDate = url.searchParams.get('start_date');
+    const endDate = url.searchParams.get('end_date');
+    const dateParam = url.searchParams.get('date');
+    const reportType = url.searchParams.get('report_type') || 'monthly';
+    const clientType = url.searchParams.get('client_type');
+    
+    // Build new URL
+    url.searchParams.set('report_type', reportType);
+    if (startDate) url.searchParams.set('start_date', startDate);
+    if (endDate) url.searchParams.set('end_date', endDate);
+    if (dateParam) url.searchParams.set('date', dateParam);
+    if (clientType) url.searchParams.set('client_type', clientType);
+    if (clientId) {
+        url.searchParams.set('client', clientId);
+    } else {
+        url.searchParams.delete('client');
+    }
+    
+    // Store scroll position to restore after page load
+    sessionStorage.setItem('reportScrollPosition', currentScrollY);
+    window.location.href = url.toString();
 }
 
 // Restore scroll position immediately on page load
@@ -266,10 +466,27 @@ function changeReportType(type, event) {
     }
 })();
 
+// Initialize all charts after DOM and Chart.js are loaded
+function initializeCharts() {
+    // Check if Chart.js is loaded
+    if (typeof Chart === 'undefined') {
+        // Retry after a short delay if Chart.js isn't loaded yet
+        setTimeout(initializeCharts, 100);
+        return;
+    }
+
+    // Wait for DOM to be ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeCharts);
+        return;
+    }
+
 // Daily Trends Chart
 {% if report_type == 'daily' or report_type == 'weekly' %}
-const dailyCtx = document.getElementById('dailyTrendsChart').getContext('2d');
-new Chart(dailyCtx, {
+const dailyChartEl = document.getElementById('dailyTrendsChart');
+if (dailyChartEl) {
+    const dailyCtx = dailyChartEl.getContext('2d');
+    new Chart(dailyCtx, {
     type: 'line',
     data: {
         labels: {{ daily_labels }},
@@ -377,13 +594,16 @@ new Chart(dailyCtx, {
             }
         }
     }
-});
+    });
+}
 {% endif %}
 
 // Weekly Trends Chart
 {% if report_type == 'weekly' or report_type == 'monthly' %}
-const weeklyCtx = document.getElementById('weeklyTrendsChart').getContext('2d');
-new Chart(weeklyCtx, {
+const weeklyChartEl = document.getElementById('weeklyTrendsChart');
+if (weeklyChartEl) {
+    const weeklyCtx = weeklyChartEl.getContext('2d');
+    new Chart(weeklyCtx, {
     type: 'bar',
     data: {
         labels: {{ weekly_labels }},
@@ -462,13 +682,16 @@ new Chart(weeklyCtx, {
             }
         }
     }
-});
+    });
+}
 {% endif %}
 
 // Transaction Type Breakdown Chart
 {% if report_type == 'daily' or report_type == 'weekly' or report_type == 'monthly' %}
-const typeCtx = document.getElementById('typeBreakdownChart').getContext('2d');
-new Chart(typeCtx, {
+const typeChartEl = document.getElementById('typeBreakdownChart');
+if (typeChartEl) {
+    const typeCtx = typeChartEl.getContext('2d');
+    new Chart(typeCtx, {
     type: 'doughnut',
     data: {
         labels: {{ type_labels }},
@@ -513,13 +736,16 @@ new Chart(typeCtx, {
             }
         }
     }
-});
+    });
+}
 {% endif %}
 
 // Monthly Trends Chart
 {% if report_type == 'monthly' %}
-const monthlyCtx = document.getElementById('monthlyTrendsChart').getContext('2d');
-new Chart(monthlyCtx, {
+const monthlyChartEl = document.getElementById('monthlyTrendsChart');
+if (monthlyChartEl) {
+    const monthlyCtx = monthlyChartEl.getContext('2d');
+    new Chart(monthlyCtx, {
     type: 'bar',
     data: {
         labels: {{ monthly_labels }},
@@ -598,13 +824,16 @@ new Chart(monthlyCtx, {
             }
         }
     }
-});
+    });
+}
 {% endif %}
 
 {% if report_type == 'daily' and client_labels %}
 // Top Clients Chart
-const clientsCtx = document.getElementById('topClientsChart').getContext('2d');
-new Chart(clientsCtx, {
+const clientsChartEl = document.getElementById('topClientsChart');
+if (clientsChartEl) {
+    const clientsCtx = clientsChartEl.getContext('2d');
+    new Chart(clientsCtx, {
     type: 'bar',
     data: {
         labels: {{ client_labels }},
@@ -668,7 +897,12 @@ new Chart(clientsCtx, {
             }
         }
     }
-});
+    });
+}
 {% endif %}
+}
+
+// Start chart initialization
+initializeCharts();
 </script>
 {% endblock %}

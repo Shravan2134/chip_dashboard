@@ -65,7 +65,9 @@
                 <tr>
                     <th>Exchange Name</th>
                     <th>My Share %</th>
+                    {% if client_type == 'company' %}
                     <th>Company Share %</th>
+                    {% endif %}
                     <th>Actions</th>
                 </tr>
                 </thead>
@@ -78,7 +80,9 @@
                             </a>
                         </td>
                         <td>{{ ce.my_share_pct }}%</td>
+                        {% if client_type == 'company' %}
                         <td>{{ ce.company_share_pct }}%</td>
+                        {% endif %}
                         <td>
                             <a href="{% url 'exchanges:edit_client_link' ce.pk %}" class="btn btn-sm">Edit</a>
                         </td>
@@ -104,7 +108,9 @@
                 <tr>
                     <th>Exchange Name</th>
                     <th>My Share %</th>
+                    {% if client_type == 'company' %}
                     <th>Company Share %</th>
+                    {% endif %}
                     <th>Actions</th>
                 </tr>
                 </thead>
@@ -117,7 +123,9 @@
                             </a>
                         </td>
                         <td style="color: var(--muted);">{{ ce.my_share_pct }}%</td>
+                        {% if client_type == 'company' %}
                         <td style="color: var(--muted);">{{ ce.company_share_pct }}%</td>
+                        {% endif %}
                         <td>
                             <a href="{% url 'exchanges:edit_client_link' ce.pk %}" class="btn btn-sm">Edit</a>
                         </td>

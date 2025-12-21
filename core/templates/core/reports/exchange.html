@@ -128,7 +128,6 @@
             <th>Type</th>
             <th>Amount</th>
             <th>Your Share</th>
-            <th>Client Share</th>
             <th>Company Share</th>
         </tr>
         </thead>
@@ -154,12 +153,11 @@
                 </td>
                 <td><strong>₹ {{ tx.amount }}</strong></td>
                 <td>₹ {{ tx.your_share_amount|default:0 }}</td>
-                <td>₹ {{ tx.client_share_amount|default:0 }}</td>
                 <td>₹ {{ tx.company_share_amount|default:0 }}</td>
             </tr>
         {% empty %}
             <tr>
-                <td colspan="7">No transactions found for this exchange.</td>
+                <td colspan="6">No transactions found for this exchange.</td>
             </tr>
         {% endfor %}
         </tbody>
