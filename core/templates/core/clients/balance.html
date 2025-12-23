@@ -90,78 +90,42 @@
 <div class="table-wrapper" style="margin-bottom: 24px;">
     <div class="table-header">
         <div><strong>{{ balance.exchange.name }}</strong>{% if balance.exchange.code %} ({{ balance.exchange.code }}){% endif %} - Balance Summary</div>
-        <div style="font-size: 20px; font-weight: 600; color: var(--accent);">
-            Total Balance: ₹ {{ balance.total_balance_in_exchange|floatformat:2 }}
+        <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <div style="font-size: 20px; font-weight: 600; color: var(--accent);">
+                Current Balance: ₹ {{ balance.total_balance_in_exchange|floatformat:2 }}
+            </div>
+            {% if all_transactions %}
+            <a href="#transactions-section" class="btn btn-primary" style="white-space: nowrap; text-decoration: none;">
+                View All Transactions ({{ all_transactions|length }})
+            </a>
+            {% endif %}
         </div>
     </div>
     <table>
         <thead>
         <tr>
-            <th>Metric</th>
+            <th>Summary</th>
             <th>Amount</th>
         </tr>
         </thead>
         <tbody>
+        {% if client_type == 'company' %}
         <tr>
-            <td><strong>Total Balance in Exchange Account</strong></td>
+            <td><strong>My Percentage</strong></td>
+            <td><strong style="font-size: 16px; color: var(--accent);">{{ balance.my_share_pct|floatformat:2 }}%</strong></td>
+        </tr>
+        <tr>
+            <td><strong>Company Percentage</strong></td>
+            <td><strong style="font-size: 16px; color: var(--accent);">{{ balance.company_share_pct|floatformat:2 }}%</strong></td>
+        </tr>
+        {% endif %}
+        <tr>
+            <td><strong>Total Turnover</strong></td>
+            <td><strong style="font-size: 18px; color: var(--accent);">₹ {{ balance.total_turnover|floatformat:2 }}</strong></td>
+        </tr>
+        <tr>
+            <td><strong>Current Exchange Balance</strong></td>
             <td><strong style="font-size: 18px; color: var(--accent);">₹ {{ balance.total_balance_in_exchange|floatformat:2 }}</strong></td>
-        </tr>
-        <tr>
-            <td>Total Funding</td>
-            <td><strong>₹ {{ balance.total_funding|floatformat:2 }}</strong></td>
-        </tr>
-        <tr>
-            <td>Total Profit</td>
-            <td style="color: var(--success);">₹ {{ balance.total_profit|floatformat:2 }}</td>
-        </tr>
-        <tr>
-            <td>Total Loss</td>
-            <td style="color: var(--danger);">₹ {{ balance.total_loss|floatformat:2 }}</td>
-        </tr>
-        <tr>
-            <td><strong>Client Net Balance</strong></td>
-            <td><strong style="color: {% if balance.client_net >= 0 %}var(--success){% else %}var(--danger){% endif %};">₹ {{ balance.client_net|floatformat:2 }}</strong></td>
-        </tr>
-        <tr>
-            <td><strong>Your Net Balance</strong></td>
-            <td><strong style="color: {% if balance.you_net >= 0 %}var(--success){% else %}var(--danger){% endif %};">₹ {{ balance.you_net|floatformat:2 }}</strong></td>
-        </tr>
-        <tr>
-            <td>Pending: Client Owes You</td>
-            <td style="color: var(--danger);">₹ {{ balance.pending_client_owes|floatformat:2 }}</td>
-        </tr>
-        <tr>
-            <td>Pending: You Owe Client</td>
-            <td style="color: var(--success);">₹ {{ balance.pending_you_owe|floatformat:2 }}</td>
-        </tr>
-        <tr style="background: rgba(239, 68, 68, 0.05);">
-            <td><strong>Pending Amount (Separate Ledger)</strong></td>
-            <td><strong style="color: var(--danger); font-size: 18px;">₹ {{ balance.pending_amount|floatformat:2 }}</strong></td>
-        </tr>
-        </tbody>
-    </table>
-</div>
-
-<!-- Profit/Loss Calculation -->
-<div class="table-wrapper" style="margin-bottom: 24px;">
-    <div class="table-header">
-        <div>Profit/Loss Calculation</div>
-    </div>
-    <table>
-        <thead>
-        <tr>
-            <th>Item</th>
-            <th>Amount</th>
-        </tr>
-        </thead>
-        <tbody>
-        <tr>
-            <td><strong>Total Admin Funding</strong></td>
-            <td><strong>₹ {{ balance.total_funding|floatformat:2 }}</strong></td>
-        </tr>
-        <tr>
-            <td>Exchange Balance (Recorded + Extra)</td>
-            <td>₹ {{ balance.total_balance_in_exchange|floatformat:2 }}</td>
         </tr>
         <tr style="border-top: 2px solid var(--border);">
             <td><strong>Client Profit/Loss</strong></td>
@@ -169,42 +133,32 @@
                 <strong style="color: {% if balance.is_profit %}var(--success){% else %}var(--danger){% endif %}; font-size: 18px;">
                     {% if balance.is_profit %}+{% endif %}₹ {{ balance.client_profit_loss|floatformat:2 }}
                 </strong>
-                {% if balance.is_profit %}
-                    <span style="color: var(--success); margin-left: 8px;">(Client in Profit)</span>
-                {% else %}
-                    <span style="color: var(--danger); margin-left: 8px;">(Client in Loss)</span>
-                {% endif %}
+                <span style="color: {% if balance.is_profit %}var(--success){% else %}var(--danger){% endif %}; margin-left: 8px;">
+                    {% if balance.is_profit %}(Profit){% else %}(Loss){% endif %}
+                </span>
             </td>
         </tr>
         {% if balance.is_profit %}
-        <tr style="background: rgba(239, 68, 68, 0.05);">
-            <td>Admin Pays ({{ balance.admin_profit_share_pct_used|default:settings.admin_profit_share_pct }}% of profit)</td>
-            <td style="color: var(--danger);">₹ {{ balance.admin_pays|default:balance.admin_loss|floatformat:2 }}</td>
-        </tr>
-        {% if client_type == 'company' %}
         <tr>
-            <td>Company Pays ({{ balance.company_share_pct }}% of client's share)</td>
-            <td>₹ {{ balance.company_pays|default:balance.company_share_loss|floatformat:2 }}</td>
-        </tr>
-        {% endif %}
-        <tr>
-            <td><strong>Total Payable to Client</strong></td>
-            <td><strong style="color: var(--danger);">₹ {{ balance.client_profit|default:balance.client_profit_loss|floatformat:2 }}</strong></td>
+            <td>You Pay to Client</td>
+            <td style="color: var(--danger);"><strong>₹ {{ balance.client_profit|default:balance.client_profit_loss|floatformat:2 }}</strong></td>
         </tr>
         {% else %}
-        <tr style="background: rgba(16, 185, 129, 0.05);">
-            <td>Admin Earns ({{ settings.admin_loss_share_pct }}% of loss)</td>
-            <td style="color: var(--success);">₹ {{ balance.admin_earns|default:balance.admin_profit|floatformat:2 }}</td>
+        <tr>
+            <td>You Earn from Client</td>
+            <td style="color: var(--success);"><strong>₹ {{ balance.admin_earns|default:balance.admin_profit|floatformat:2 }}</strong></td>
         </tr>
         {% if client_type == 'company' %}
         <tr>
-            <td>Company Earns ({{ settings.company_loss_share_pct }}% of loss)</td>
+            <td>Company Earns</td>
             <td>₹ {{ balance.company_earns|default:balance.company_share_profit|floatformat:2 }}</td>
         </tr>
         {% endif %}
-        <tr>
-            <td><strong>Admin Net</strong></td>
-            <td><strong>₹ {{ balance.admin_net|floatformat:2 }}</strong></td>
+        {% endif %}
+        {% if balance.pending_amount != 0 %}
+        <tr style="border-top: 2px solid var(--border); background: rgba(239, 68, 68, 0.05);">
+            <td><strong>Unpaid Amount (Pending)</strong></td>
+            <td><strong style="color: var(--danger); font-size: 18px;">₹ {{ balance.pending_amount|floatformat:2 }}</strong></td>
         </tr>
         {% endif %}
         </tbody>
@@ -233,7 +187,7 @@
             <td>{{ daily_balance.date|date:"M d, Y" }}</td>
             <td><strong style="color: var(--accent);">₹ {{ daily_balance.remaining_balance|floatformat:2 }}</strong></td>
             <td>{% if daily_balance.extra_adjustment %}<span style="color: var(--success);">+ ₹ {{ daily_balance.extra_adjustment|floatformat:2 }}</span>{% else %}—{% endif %}</td>
-            <td>{{ daily_balance.note|default:"—" }}</td>
+            <td>{{ daily_balance.note }}</td>
             <td>
                 <a href="?edit_balance={{ daily_balance.pk }}{% if selected_exchange_id %}&exchange={{ selected_exchange_id }}{% endif %}" class="btn btn-sm">Edit</a>
             </td>
@@ -255,7 +209,7 @@
 
 <!-- All Transactions Section -->
 {% if all_transactions %}
-<div style="background: var(--bg-content); border-radius: 8px; padding: 0; border: 1px solid var(--border); margin-bottom: 24px; overflow: hidden;">
+<div id="transactions-section" style="background: var(--bg-content); border-radius: 8px; padding: 0; border: 1px solid var(--border); margin-bottom: 24px; overflow: hidden; scroll-margin-top: 20px;">
     <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--bg-content);">
         <h2 style="font-size: 18px; font-weight: 600; margin: 0;">
             All Transactions
@@ -368,7 +322,12 @@ function loadExchangeBalanceData(clientExchangeId) {
             if (data.success) {
                 dateInput.value = data.date;
                 amountInput.value = data.remaining_balance;
+                // Only populate note if editing an existing balance, otherwise keep it empty for new records
+                {% if not edit_balance %}
+                noteInput.value = '';
+                {% else %}
                 noteInput.value = data.note || '';
+                {% endif %}
                 
                 const fundingHintDiv = document.getElementById('funding-hint');
                 

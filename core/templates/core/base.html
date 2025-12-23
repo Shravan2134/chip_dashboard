@@ -140,6 +140,39 @@
             color: var(--muted);
         }
 
+        .nav-dropdown {
+            margin: 12px 0;
+        }
+
+        .nav-dropdown select {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
+            color: #e5e7eb;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.12s ease, border-color 0.12s ease;
+        }
+
+        .nav-dropdown select:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .nav-dropdown select:focus {
+            outline: none;
+            border-color: var(--accent);
+            background: rgba(20, 184, 166, 0.1);
+        }
+
+        .nav-dropdown select option {
+            background: var(--sidebar-bg);
+            color: #e5e7eb;
+        }
+
         .main {
             flex: 1;
             margin-left: 280px;
@@ -360,6 +393,7 @@
         function toggleSidebar() {
             document.body.classList.toggle('sidebar-collapsed');
         }
+
     </script>
 </head>
 <body>
@@ -374,34 +408,58 @@
             </div>
         </div>
 
+        <!-- Client Type Filter -->
+        <div style="margin-bottom: 24px; padding: 0 8px;">
+            <div style="font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; font-weight: 600;">Filter</div>
+            <select name="client_type" id="client-type-select" class="field-input" style="width: 100%; padding: 10px 12px; font-size: 14px; background: #1f2937; color: #ffffff; border: 1px solid #374151; border-radius: 6px;" onchange="updateClientTypeFilter(this.value)">
+                <option value="all" {% if client_type_filter == 'all' or not client_type_filter %}selected{% endif %}>All Clients</option>
+                <option value="my" {% if client_type_filter == 'my' %}selected{% endif %}>My Clients</option>
+                <option value="company" {% if client_type_filter == 'company' %}selected{% endif %}>Company Clients</option>
+            </select>
+        </div>
+        <script>
+            function updateClientTypeFilter(value) {
+                // Get current URL
+                const currentUrl = new URL(window.location.href);
+                // Update or add client_type parameter
+                currentUrl.searchParams.set('client_type', value);
+                // Redirect to updated URL
+                window.location.href = currentUrl.toString();
+            }
+        </script>
+
         <div class="nav-section-label">Main</div>
         <ul class="nav">
             <li class="nav-item">
-                <a href="{% url 'dashboard' %}" class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+                <a href="{% url 'dashboard' %}" id="nav-dashboard-link" class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
                     <span class="nav-icon">🏠</span>
                     <span>Dashboard</span>
                 </a>
             </li>
-            <li class="nav-item">
+            {% if client_type_filter != 'my' %}
+            <li class="nav-item" id="nav-company-clients">
                 <a href="{% url 'company_clients:list' %}" class="nav-link {% if request.resolver_match.namespace == 'company_clients' %}active{% endif %}">
                     <span class="nav-icon">🏢</span>
                     <span>Company Clients</span>
                 </a>
             </li>
-            <li class="nav-item">
+            {% endif %}
+            {% if client_type_filter != 'company' %}
+            <li class="nav-item" id="nav-my-clients">
                 <a href="{% url 'my_clients:list' %}" class="nav-link {% if request.resolver_match.namespace == 'my_clients' %}active{% endif %}">
                     <span class="nav-icon">👤</span>
                     <span>My Clients</span>
                 </a>
             </li>
+            {% endif %}
             <li class="nav-item">
-                <a href="{% url 'exchanges:list' %}" class="nav-link {% if request.resolver_match.namespace == 'exchanges' %}active{% endif %}">
+                <a href="{% url 'exchanges:list' %}" id="nav-exchanges-link" class="nav-link {% if request.resolver_match.namespace == 'exchanges' %}active{% endif %}">
                     <span class="nav-icon">🏦</span>
                     <span>Exchanges</span>
                 </a>
             </li>
             <li class="nav-item">
-                <a href="{% url 'transactions:list' %}" class="nav-link {% if request.resolver_match.namespace == 'transactions' %}active{% endif %}">
+                <a href="{% url 'transactions:list' %}" id="nav-transactions-link" class="nav-link {% if request.resolver_match.namespace == 'transactions' %}active{% endif %}">
                     <span class="nav-icon">💸</span>
                     <span>Transactions</span>
                 </a>
@@ -411,13 +469,13 @@
         <div class="nav-section-label">Money Movement</div>
         <ul class="nav">
             <li class="nav-item">
-                <a href="{% url 'pending:summary' %}" class="nav-link {% if request.resolver_match.namespace == 'pending' %}active{% endif %}">
+                <a href="{% url 'pending:summary' %}" id="nav-pending-link" class="nav-link {% if request.resolver_match.namespace == 'pending' %}active{% endif %}">
                     <span class="nav-icon">↔️</span>
                     <span>Pending Payments</span>
                 </a>
             </li>
             <li class="nav-item">
-                <a href="{% url 'reports:overview' %}" class="nav-link {% if request.resolver_match.namespace == 'reports' %}active{% endif %}">
+                <a href="{% url 'reports:overview' %}" id="nav-reports-link" class="nav-link {% if request.resolver_match.namespace == 'reports' %}active{% endif %}">
                     <span class="nav-icon">📊</span>
                     <span>Reports</span>
                 </a>

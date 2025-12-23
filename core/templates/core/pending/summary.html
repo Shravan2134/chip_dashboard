@@ -368,6 +368,26 @@
     </div>
         {% endif %}
 
+<!-- Client Type Filter -->
+<div style="margin-bottom: 20px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+    <span style="font-size: 14px; font-weight: 500; color: #374151; margin-right: 8px;">Filter by Client Type:</span>
+    <a href="?section={% if request.GET.section %}{{ request.GET.section }}{% else %}clients-owe{% endif %}&report_type={{ report_type }}" 
+       class="tab-button {% if not client_type_filter %}active{% endif %}" 
+       style="text-decoration: none; display: inline-block;">
+        All Clients
+    </a>
+    <a href="?section={% if request.GET.section %}{{ request.GET.section }}{% else %}clients-owe{% endif %}&report_type={{ report_type }}&client_type=my" 
+       class="tab-button {% if client_type_filter == 'my' %}active{% endif %}" 
+       style="text-decoration: none; display: inline-block;">
+        My Clients
+    </a>
+    <a href="?section={% if request.GET.section %}{{ request.GET.section }}{% else %}clients-owe{% endif %}&report_type={{ report_type }}&client_type=company" 
+       class="tab-button {% if client_type_filter == 'company' %}active{% endif %}" 
+       style="text-decoration: none; display: inline-block;">
+        Company Clients
+    </a>
+</div>
+
 <!-- Tab Headers -->
 <div class="tabs-container">
     <button onclick="showSection('clients-owe')" id="tab-clients-owe" class="tab-button active">
@@ -464,7 +484,7 @@
                 <th>Total Funding</th>
                 <th>Exchange Balance</th>
                 <th>My Share</th>
-                <th>Client Profit (Payable)</th>
+                <th>Company Share</th>
                 <th>Actions</th>
             </tr>
             </thead>
@@ -481,7 +501,7 @@
                     <td>₹ {{ item.total_funding|floatformat:2 }}</td>
                     <td>₹ {{ item.exchange_balance|floatformat:2 }}</td>
                     <td><span class="amount-value">₹ {{ item.my_share|default:0|floatformat:2 }}</span></td>
-                    <td><span class="amount-value">₹ {{ item.client_profit|floatformat:2 }}</span></td>
+                    <td><span class="amount-value">₹ {{ item.company_share|default:0|floatformat:2 }}</span></td>
                     <td>
                         <button onclick="showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name }}', '{{ item.exchange_name }}', {{ item.client_profit }}, 'admin_pays_profit')" class="action-button">
                             Pay Profit
@@ -557,6 +577,24 @@
         document.getElementById('settle-exchange-name').value = exchangeName;
         document.getElementById('settle-amount').value = parseFloat(amount).toFixed(2);
         document.getElementById('settle-payment-type').value = paymentType || 'client_pays';
+        
+        // Preserve client_type filter in form
+        const urlParams = new URLSearchParams(window.location.search);
+        const clientType = urlParams.get('client_type');
+        const form = document.getElementById('settlement-form-content');
+        let hiddenInput = document.getElementById('settle-client-type');
+        if (clientType) {
+            if (!hiddenInput) {
+                hiddenInput = document.createElement('input');
+                hiddenInput.type = 'hidden';
+                hiddenInput.name = 'client_type';
+                hiddenInput.id = 'settle-client-type';
+                form.appendChild(hiddenInput);
+            }
+            hiddenInput.value = clientType;
+        } else if (hiddenInput) {
+            hiddenInput.remove();
+        }
         
         // Update form title and button text based on payment type
         const formTitle = document.querySelector('.modal-title');
@@ -649,6 +687,11 @@
         url.searchParams.set('section', sectionId);
         const reportType = url.searchParams.get('report_type') || 'daily';
         url.searchParams.set('report_type', reportType);
+        // Preserve client_type filter
+        const clientType = url.searchParams.get('client_type') || '';
+        if (clientType) {
+            url.searchParams.set('client_type', clientType);
+        }
         window.history.replaceState({}, '', url);
         
         // Update hidden input in form

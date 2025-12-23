@@ -9,35 +9,76 @@
 {% endblock %}
 
 {% block content %}
-<div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border); margin-bottom: 24px;">
-    <form method="get" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-        <input type="text" name="search" value="{{ search_query }}" class="field-input" placeholder="Search..." style="width: auto; min-width: 200px;">
-        <select name="client" class="field-input" style="width: auto;">
-            <option value="">All Clients</option>
-            {% for client in all_clients %}
-                <option value="{{ client.pk }}" {% if selected_client == client.pk %}selected{% endif %}>{{ client.name }}</option>
-            {% endfor %}
-        </select>
-        <select name="exchange" class="field-input" style="width: auto;">
-            <option value="">All Exchanges</option>
-            {% for exchange in all_exchanges %}
-                <option value="{{ exchange.pk }}" {% if selected_exchange == exchange.pk %}selected{% endif %}>{{ exchange.name }}</option>
-            {% endfor %}
-        </select>
-        <select name="type" class="field-input" style="width: auto;">
-            <option value="">All Types</option>
-            <option value="FUNDING" {% if selected_type == 'FUNDING' %}selected{% endif %}>Funding</option>
-            <option value="PROFIT" {% if selected_type == 'PROFIT' %}selected{% endif %}>Profit</option>
-            <option value="LOSS" {% if selected_type == 'LOSS' %}selected{% endif %}>Loss</option>
-            <option value="SETTLEMENT" {% if selected_type == 'SETTLEMENT' %}selected{% endif %}>Settlement</option>
-        </select>
-        <input type="date" name="start_date" value="{{ start_date }}" class="field-input" style="width: auto;" placeholder="Start Date">
-        <input type="date" name="end_date" value="{{ end_date }}" class="field-input" style="width: auto;" placeholder="End Date">
-        <button type="submit" class="btn btn-primary">Search</button>
-        {% if search_query or selected_client or selected_exchange or selected_type or start_date or end_date %}
-            <a href="{% url 'transactions:list' %}" class="btn">Clear</a>
-        {% endif %}
-    </form>
+<style>
+    .client-type-tabs {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid var(--border);
+        margin-bottom: 24px;
+        background: var(--bg-content);
+        border-radius: 8px 8px 0 0;
+        padding: 0 20px;
+    }
+    .client-type-tab {
+        padding: 12px 20px;
+        background: none;
+        border: none;
+        border-bottom: 3px solid transparent;
+        color: #6b7280;
+        font-size: 15px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-decoration: none;
+        display: inline-block;
+    }
+    .client-type-tab:hover {
+        color: var(--accent);
+        background: rgba(0, 0, 0, 0.02);
+    }
+    .client-type-tab.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+    }
+</style>
+
+<div style="background: var(--bg-content); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 24px; overflow: hidden;">
+    <div class="client-type-tabs">
+        <a href="{% url 'transactions:list' %}{% if search_query or selected_client or selected_exchange or selected_type or start_date or end_date %}?{% if search_query %}search={{ search_query|urlencode }}&{% endif %}{% if selected_client %}client={{ selected_client }}&{% endif %}{% if selected_exchange %}exchange={{ selected_exchange }}&{% endif %}{% if selected_type %}type={{ selected_type }}&{% endif %}{% if start_date %}start_date={{ start_date }}&{% endif %}{% if end_date %}end_date={{ end_date }}{% endif %}{% endif %}" class="client-type-tab {% if not client_type %}active{% endif %}" onclick="event.preventDefault(); changeClientType('');">All</a>
+        <a href="{% url 'transactions:list' %}?client_type=my{% if search_query %}&search={{ search_query|urlencode }}{% endif %}{% if selected_client %}&client={{ selected_client }}{% endif %}{% if selected_exchange %}&exchange={{ selected_exchange }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}{% if start_date %}&start_date={{ start_date }}{% endif %}{% if end_date %}&end_date={{ end_date }}{% endif %}" class="client-type-tab {% if client_type == 'my' %}active{% endif %}" onclick="event.preventDefault(); changeClientType('my');">My Clients</a>
+        <a href="{% url 'transactions:list' %}?client_type=company{% if search_query %}&search={{ search_query|urlencode }}{% endif %}{% if selected_client %}&client={{ selected_client }}{% endif %}{% if selected_exchange %}&exchange={{ selected_exchange }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}{% if start_date %}&start_date={{ start_date }}{% endif %}{% if end_date %}&end_date={{ end_date }}{% endif %}" class="client-type-tab {% if client_type == 'company' %}active{% endif %}" onclick="event.preventDefault(); changeClientType('company');">Company Clients</a>
+    </div>
+    <div style="padding: 20px;">
+        <form method="get" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+            <input type="hidden" name="client_type" id="client_type_input" value="{{ client_type }}">
+            <input type="text" name="search" value="{{ search_query }}" class="field-input" placeholder="Search..." style="width: auto; min-width: 200px;">
+            <select name="client" class="field-input" style="width: auto;">
+                <option value="">All Clients</option>
+                {% for client in all_clients %}
+                    <option value="{{ client.pk }}" {% if selected_client == client.pk %}selected{% endif %}>{{ client.name }}</option>
+                {% endfor %}
+            </select>
+            <select name="exchange" class="field-input" style="width: auto;">
+                <option value="">All Exchanges</option>
+                {% for exchange in all_exchanges %}
+                    <option value="{{ exchange.pk }}" {% if selected_exchange == exchange.pk %}selected{% endif %}>{{ exchange.name }}</option>
+                {% endfor %}
+            </select>
+            <select name="type" class="field-input" style="width: auto;">
+                <option value="">All Types</option>
+                <option value="FUNDING" {% if selected_type == 'FUNDING' %}selected{% endif %}>Funding</option>
+                <option value="PROFIT" {% if selected_type == 'PROFIT' %}selected{% endif %}>Profit</option>
+                <option value="LOSS" {% if selected_type == 'LOSS' %}selected{% endif %}>Loss</option>
+                <option value="SETTLEMENT" {% if selected_type == 'SETTLEMENT' %}selected{% endif %}>Settlement</option>
+            </select>
+            <input type="date" name="start_date" value="{{ start_date }}" class="field-input" style="width: auto;" placeholder="Start Date">
+            <input type="date" name="end_date" value="{{ end_date }}" class="field-input" style="width: auto;" placeholder="End Date">
+            <button type="submit" class="btn btn-primary">Search</button>
+            {% if search_query or selected_client or selected_exchange or selected_type or start_date or end_date or client_type %}
+                <a href="{% url 'transactions:list' %}" class="btn">Clear</a>
+            {% endif %}
+        </form>
+    </div>
 </div>
 
 <div class="table-wrapper">
@@ -94,5 +135,65 @@
         </tbody>
     </table>
 </div>
+
+<script>
+// On page load, check if there's a global client type from navigation that should be applied
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentClientType = urlParams.get('client_type');
+    const globalClientType = sessionStorage.getItem('global_client_type');
+    
+    // If no client_type in URL but we have a global client type from navigation, apply it
+    if (!currentClientType && globalClientType && globalClientType !== 'all') {
+        urlParams.set('client_type', globalClientType);
+        window.location.href = window.location.pathname + '?' + urlParams.toString();
+        return;
+    }
+    
+    // Store current client type in global sessionStorage if it exists
+    if (currentClientType && currentClientType !== 'all') {
+        sessionStorage.setItem('global_client_type', currentClientType);
+    }
+    
+    // Also update the navigation dropdown to match
+    const navDropdown = document.getElementById('client-type-filter');
+    if (navDropdown) {
+        const effectiveClientType = currentClientType || globalClientType || 'all';
+        navDropdown.value = effectiveClientType;
+    }
+});
+
+function changeClientType(newType) {
+    // Store in both global and transactions-specific sessionStorage
+    if (newType && newType !== 'all') {
+        sessionStorage.setItem('global_client_type', newType);
+        sessionStorage.setItem('transactions_client_type', newType);
+    } else {
+        sessionStorage.removeItem('global_client_type');
+        sessionStorage.removeItem('transactions_client_type');
+    }
+    
+    // Update the hidden input
+    document.getElementById('client_type_input').value = newType;
+    
+    // Build URL with all current filters
+    const form = document.querySelector('form[method="get"]');
+    const formData = new FormData(form);
+    const params = new URLSearchParams();
+    
+    // Add all form values to params
+    for (const [key, value] of formData.entries()) {
+        if (key === 'client_type') {
+            params.set(key, newType);
+        } else if (value) {
+            params.set(key, value);
+        }
+    }
+    
+    // Navigate to new URL
+    const url = '{% url "transactions:list" %}' + (params.toString() ? '?' + params.toString() : '');
+    window.location.href = url;
+}
+</script>
 {% endblock %}
 
