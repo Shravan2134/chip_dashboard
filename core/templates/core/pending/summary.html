@@ -507,7 +507,7 @@
 <div id="section-you-owe" class="section-content" style="display: none;">
     <div class="section-header">
         <h2 class="section-title">
-            You Owe Clients (Clients in Profit)
+            You Owe Clients (Your Loss/Expense)
         </h2>
         <label class="combine-shares-toggle" for="combine-shares-toggle">
             <input type="checkbox" id="combine-shares-toggle" {% if combine_shares %}checked{% endif %} onchange="toggleCombineShares(this)" onclick="return true;">
@@ -517,10 +517,10 @@
     {% if total_profit %}
     <div class="summary-card">
         <div class="summary-amount">
-            Total Profit: ₹ {{ total_profit|floatformat:1 }}
+            Total Amount to Pay: ₹ {{ total_profit|floatformat:1 }}
         </div>
         <div class="summary-note">
-            Profit payment does NOT affect pending amount (separate ledger)
+            This is your loss/expense - amount you need to pay to clients. Payment does NOT affect pending amount (separate ledger)
         </div>
     </div>
     {% endif %}
@@ -565,7 +565,7 @@
                     </td>
                     <td>
                         <button onclick="showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name }}', '{{ item.exchange_name }}', {{ item.client_profit }}, 'admin_pays_profit', 0, 0, 0, {{ item.is_company_client|yesno:"true,false" }})" class="action-button">
-                            Pay Profit
+                            Pay Client
                         </button>
                     </td>
                 </tr>
@@ -772,7 +772,7 @@
         const pendingAmountText = document.getElementById('pending-amount-text');
         
         if (paymentType === 'admin_pays_profit') {
-            formTitle.textContent = 'Pay Client Profit';
+            formTitle.textContent = 'Pay Client (Your Loss/Expense)';
             submitButton.textContent = 'Pay Client';
             pendingInfo.style.display = 'none';
                 shareInfo.style.display = 'none';
