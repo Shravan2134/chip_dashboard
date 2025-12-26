@@ -607,7 +607,7 @@
             
             <div class="form-group">
                 <label class="form-label">Amount to Pay (₹) *</label>
-                <input type="number" name="amount" id="settle-amount" class="form-input" step="0.01" min="0" required placeholder="0.0" data-combined-share="0">
+                <input type="number" name="amount" id="settle-amount" class="form-input" step="0.1" min="0" max="0" required placeholder="0.0" data-combined-share="0" data-max-amount="0">
                 <div id="share-info" class="form-help" style="display: none; margin-top: 8px; padding: 12px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
                         <span style="font-size: 13px; color: #6b7280;">My Share:</span>
@@ -627,6 +627,11 @@
                 </div>
                 <div id="pending-info" class="form-help" style="display: none;">
                     <span id="pending-amount-text"></span> - You can pay any amount (partial or full)
+                </div>
+                <div id="profit-payment-info" class="form-help" style="display: none; margin-top: 8px; padding: 10px; background: #fef3c7; border-radius: 6px; border: 1px solid #fbbf24;">
+                    <div style="font-size: 12px; color: #92400e; font-weight: 500;">
+                        ⚠️ Important: You pay ONLY your share amount, NOT the full profit. The remaining balance stays in the exchange.
+                    </div>
                 </div>
             </div>
             
@@ -723,14 +728,50 @@
             // Store combined share for validation
             const combinedShareValue = parseFloat(combinedShare) || 0;
             const amountInput = document.getElementById('settle-amount');
+            const profitPaymentInfo = document.getElementById('profit-payment-info');
+            const pendingInfo = document.getElementById('pending-info');
             
-            // For client_pays, set amount to combined share (not pending amount)
-            if (paymentType === 'client_pays' && combinedShareValue > 0) {
-                amountInput.value = combinedShareValue.toFixed(2);
-                amountInput.setAttribute('data-combined-share', combinedShareValue.toFixed(2));
-            } else {
-                amountInput.value = parseFloat(amount).toFixed(2);
+            // For admin_pays_profit: You pay ONLY your share amount, NOT the full profit
+            if (paymentType === 'admin_pays_profit') {
+                // amount parameter is already the share amount (my_share) for company clients
+                const shareAmount = parseFloat(amount) || 0;
+                amountInput.value = shareAmount.toFixed(1);
+                amountInput.max = shareAmount.toFixed(1);  // Max is the share amount only
+                amountInput.setAttribute('data-max-amount', shareAmount.toFixed(1));
                 amountInput.setAttribute('data-combined-share', '0');
+                
+                // Show warning that you only pay share amount
+                if (profitPaymentInfo) {
+                    profitPaymentInfo.style.display = 'block';
+                }
+                if (pendingInfo) {
+                    pendingInfo.style.display = 'none';
+                }
+            } else if (paymentType === 'client_pays' && combinedShareValue > 0) {
+                // For client_pays, set amount to combined share (not pending amount)
+                amountInput.value = combinedShareValue.toFixed(1);
+                amountInput.max = '';  // No max limit for client payments
+                amountInput.setAttribute('data-combined-share', combinedShareValue.toFixed(1));
+                amountInput.setAttribute('data-max-amount', '0');
+                
+                if (profitPaymentInfo) {
+                    profitPaymentInfo.style.display = 'none';
+                }
+                if (pendingInfo) {
+                    pendingInfo.style.display = 'block';
+                }
+            } else {
+                amountInput.value = parseFloat(amount).toFixed(1);
+                amountInput.max = '';
+                amountInput.setAttribute('data-combined-share', '0');
+                amountInput.setAttribute('data-max-amount', '0');
+                
+                if (profitPaymentInfo) {
+                    profitPaymentInfo.style.display = 'none';
+                }
+                if (pendingInfo) {
+                    pendingInfo.style.display = 'none';
+                }
             }
         
         // Preserve client_type filter in form
@@ -875,6 +916,16 @@
         const date = document.querySelector('input[name="date"]').value;
         const clientId = document.getElementById('settle-client-id').value;
         const clientExchangeId = document.getElementById('settle-client-exchange-id').value;
+        
+        // Validation: For admin_pays_profit, ensure amount doesn't exceed share amount
+        if (paymentType === 'admin_pays_profit') {
+            const maxAmount = parseFloat(amountInput.getAttribute('data-max-amount')) || 0;
+            if (maxAmount > 0 && amount > maxAmount) {
+                alert(`⚠️ You can only pay your share amount (₹${maxAmount.toFixed(1)}), not the full profit. Payments happen ONLY on SHARE, never on full profit.`);
+                event.preventDefault();
+                return false;
+            }
+        }
         
         console.log('Form data:', {
             amount: amount,

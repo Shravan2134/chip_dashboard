@@ -91,7 +91,7 @@
     <div class="table-header">
         <div><strong>{{ balance.exchange.name }}</strong>{% if balance.exchange.code %} ({{ balance.exchange.code }}){% endif %} - Balance Summary</div>
         <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-            <div style="font-size: 20px; font-weight: 600; color: var(--accent);">
+        <div style="font-size: 20px; font-weight: 600; color: var(--accent);">
                 Current Balance: ₹ {{ balance.total_balance_in_exchange|floatformat:1 }}
             </div>
             {% if all_transactions %}
