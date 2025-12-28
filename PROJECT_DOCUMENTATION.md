@@ -1,4 +1,4 @@
-# Broker Portal - Complete Project Documentation
+# Transaction Hub - Complete Project Documentation
 
 ## Table of Contents
 1. [Project Overview](#project-overview)
@@ -19,7 +19,7 @@
 ## Project Overview
 
 ### Purpose
-The Broker Portal is a Django-based web application designed to manage financial transactions between brokers, clients, and exchanges. It tracks:
+The Transaction Hub is a Django-based web application designed to manage financial transactions between brokers, clients, and exchanges. It tracks:
 - Client funding and balances across multiple exchanges
 - Profit and loss calculations with configurable share percentages
 - Pending payments (clients owe you / you owe clients)
@@ -986,6 +986,7 @@ For questions or issues:
 ---
 
 **End of Documentation**
+
 
 
 

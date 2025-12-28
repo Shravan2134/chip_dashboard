@@ -23,9 +23,26 @@ class Client(TimeStampedModel):
     referred_by = models.CharField(max_length=255, blank=True, null=True, help_text="Name of person who referred this client")
     is_active = models.BooleanField(default=True)
     is_company_client = models.BooleanField(default=False, help_text="If True, this is a company client. If False, this is your personal client.")
+    security_deposit = models.DecimalField(
+        max_digits=14, 
+        decimal_places=2, 
+        default=Decimal('0'), 
+        help_text='One-time security deposit paid by company client (only for company clients)'
+    )
+    security_deposit_paid_date = models.DateField(
+        blank=True, 
+        null=True, 
+        help_text='Date when security deposit was paid (one-time payment)'
+    )
 
     class Meta:
         unique_together = [("user", "code")]  # Code must be unique per user
+        indexes = [
+            models.Index(fields=["user", "is_active"]),
+            models.Index(fields=["user", "is_company_client"]),
+            models.Index(fields=["is_company_client", "is_active"]),
+            models.Index(fields=["code"]),  # For client code searches
+        ]
 
     def __str__(self) -> str:
         if self.code:
@@ -67,10 +84,41 @@ class ClientExchange(TimeStampedModel):
     )
 
     is_active = models.BooleanField(default=True)
+    
+    # Cached/denormalized fields for performance optimization
+    # These are updated via signals when transactions/balances change
+    cached_current_balance = models.DecimalField(
+        max_digits=14, 
+        decimal_places=2, 
+        default=Decimal(0),
+        help_text="Cached current exchange balance (updated automatically)"
+    )
+    cached_old_balance = models.DecimalField(
+        max_digits=14, 
+        decimal_places=2, 
+        default=Decimal(0),
+        help_text="Cached old balance after last settlement (updated automatically)"
+    )
+    cached_total_funding = models.DecimalField(
+        max_digits=14, 
+        decimal_places=2, 
+        default=Decimal(0),
+        help_text="Cached total funding amount (updated automatically)"
+    )
+    balance_last_updated = models.DateTimeField(
+        null=True, 
+        blank=True,
+        help_text="Timestamp when cached balance fields were last updated"
+    )
 
     class Meta:
         unique_together = ("client", "exchange")
         ordering = ["client__name", "exchange__name"]
+        indexes = [
+            models.Index(fields=["client", "is_active"]),
+            models.Index(fields=["exchange", "is_active"]),
+            models.Index(fields=["is_active"]),
+        ]
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -121,6 +169,14 @@ class Transaction(TimeStampedModel):
 
     class Meta:
         ordering = ["-date", "-created_at"]
+        indexes = [
+            models.Index(fields=["client_exchange", "transaction_type"]),
+            models.Index(fields=["client_exchange", "date"]),
+            models.Index(fields=["transaction_type", "date"]),
+            models.Index(fields=["date"]),
+            # Composite index for common query pattern: client_exchange + transaction_type + date
+            models.Index(fields=["client_exchange", "transaction_type", "date"]),
+        ]
 
     def __str__(self) -> str:
         return f"{self.client_exchange} {self.transaction_type} {self.amount} on {self.date}"
@@ -170,6 +226,10 @@ class DailyBalanceSnapshot(TimeStampedModel):
     class Meta:
         unique_together = ("client_exchange", "date")
         ordering = ["-date"]
+        indexes = [
+            models.Index(fields=["client_exchange", "date"]),
+            models.Index(fields=["date"]),
+        ]
 
     def __str__(self) -> str:
         code_part = f"{self.client_exchange.client.code} " if self.client_exchange.client.code else ""
@@ -214,6 +274,11 @@ class ClientDailyBalance(TimeStampedModel):
         unique_together = [("client_exchange", "date"), ("client", "date")]  # Support both during migration
         ordering = ["-date", "client_exchange__exchange__name"]
         verbose_name_plural = "Client Daily Balances"
+        indexes = [
+            models.Index(fields=["client_exchange", "date"]),
+            models.Index(fields=["client", "date"]),  # For legacy support
+            models.Index(fields=["date"]),
+        ]
     
     @property
     def client_obj(self):
@@ -373,7 +438,7 @@ class TallyLedger(TimeStampedModel):
 
 class SystemSettings(models.Model):
     """
-    System-wide settings for the broker portal.
+    System-wide settings for the transaction hub.
     Singleton pattern - only one settings record should exist.
     """
     

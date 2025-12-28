@@ -109,20 +109,14 @@ def get_old_balance_after_settlement(client_exchange, as_of_date=None):
         # Settlement exists - Old Balance RESETS to Current Exchange Balance at settlement time
         # 🔒 KEY RULE: Payment = closing the book → Old Balance becomes the current balance
         
-        # Find the balance record (ClientDailyBalance) at or right after the settlement date
+        # Find the balance record (ClientDailyBalance) at or BEFORE the settlement date
         # This represents the Current Exchange Balance at the time of settlement
-        # Priority: 1) Balance record on same date as settlement, 2) Balance record after settlement, 3) Latest balance record before settlement
+        # Priority: 1) Balance record on same date as settlement, 2) Latest balance record before settlement
+        # IMPORTANT: Do NOT use balance records AFTER settlement - they represent new state, not settlement state
         balance_at_settlement = ClientDailyBalance.objects.filter(
             client_exchange=client_exchange,
-            date__gte=last_settlement.date  # Balance record at or after settlement
-        ).order_by("date", "created_at").first()  # Get the earliest one at/after settlement
-        
-        if not balance_at_settlement:
-            # Fallback: Use the latest balance record before settlement
-            balance_at_settlement = ClientDailyBalance.objects.filter(
-                client_exchange=client_exchange,
-                date__lt=last_settlement.date  # Balance record before settlement
-            ).order_by("-date", "-created_at").first()  # Get the latest one before settlement
+            date__lte=last_settlement.date  # Balance record at or BEFORE settlement (not after)
+        ).order_by("-date", "-created_at").first()  # Get the latest one at/before settlement
         
         if balance_at_settlement:
             # Use the balance record's remaining_balance + extra_adjustment as the Old Balance after settlement
@@ -1367,12 +1361,12 @@ def settle_payment(request):
                     if not client_exchange.client.is_company_client:
                         # MY CLIENTS: Admin receives payment directly
                         transaction = Transaction.objects.create(
-                        client_exchange=client_exchange,
-                        date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
-                        transaction_type=Transaction.TYPE_SETTLEMENT,
-                        amount=transaction_amount,
+                            client_exchange=client_exchange,
+                            date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
+                            transaction_type=Transaction.TYPE_SETTLEMENT,
+                            amount=transaction_amount,
                             client_share_amount=Decimal(0),  # Client pays
-                        your_share_amount=my_share_amount,  # Admin receives My Share
+                            your_share_amount=my_share_amount,  # Admin receives My Share
                             company_share_amount=Decimal(0),  # No company share for my clients
                             note=note_text,
                         )
@@ -1470,14 +1464,14 @@ def settle_payment(request):
                         
                         # Create SETTLEMENT transaction where admin pays client
                         transaction = Transaction.objects.create(
-                        client_exchange=client_exchange,
-                        date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
-                        transaction_type=Transaction.TYPE_SETTLEMENT,
-                        amount=amount,
-                        client_share_amount=amount,  # Client receives
-                        your_share_amount=Decimal(0),  # Admin pays, doesn't receive
-                        company_share_amount=Decimal(0),
-                        note=note or f"Admin payment for client profit",
+                            client_exchange=client_exchange,
+                            date=datetime.strptime(tx_date, "%Y-%m-%d").date(),
+                            transaction_type=Transaction.TYPE_SETTLEMENT,
+                            amount=amount,
+                            client_share_amount=amount,  # Client receives
+                            your_share_amount=Decimal(0),  # Admin pays, doesn't receive
+                            company_share_amount=Decimal(0),
+                            note=note or f"Admin payment for client profit",
                         )
                         
                         from django.contrib import messages
@@ -1550,7 +1544,9 @@ def company_client_create(request):
                 name=name,
                 code=code if code else None,
                 referred_by=referred_by if referred_by else None,
-                is_company_client=True
+                is_company_client=True,
+                security_deposit=Decimal(0),
+                security_deposit_paid_date=None
             )
             return redirect(reverse("company_clients:list"))
     return render(request, "core/clients/create_company.html")
@@ -1569,7 +1565,9 @@ def my_client_create(request):
                 name=name,
                 code=code if code else None,
                 referred_by=referred_by if referred_by else None,
-                is_company_client=False
+                is_company_client=False,
+                security_deposit=Decimal(0),
+                security_deposit_paid_date=None
             )
             return redirect(reverse("my_clients:list"))
     return render(request, "core/clients/create_my.html")
@@ -1939,15 +1937,14 @@ def pending_summary(request):
         # For MY CLIENTS: Check Old Balance > Current Balance (not net_client_tally)
         # For COMPANY CLIENTS: Use net_client_tally > 0
         
-        # First, check if this is a loss case for MY CLIENTS
-        if not client_exchange.client.is_company_client:
-            # MY CLIENTS: Check if Old Balance > Current Balance (loss case)
-            old_balance_check = get_old_balance_after_settlement(client_exchange)
-            current_balance_check = profit_loss_data["exchange_balance"]
-            is_loss_case = old_balance_check > current_balance_check
-        else:
-            # COMPANY CLIENTS: Use net_client_tally
-            is_loss_case = net_client_tally > 0
+        # For BOTH MY CLIENTS and COMPANY CLIENTS: Use Old Balance vs Current Balance
+        # This is the correct way to determine profit/loss
+        old_balance_check = get_old_balance_after_settlement(client_exchange)
+        current_balance_check = profit_loss_data["exchange_balance"]
+        
+        # Loss case: Old Balance > Current Balance (client owes you)
+        # Profit case: Current Balance > Old Balance (you owe client)
+        is_loss_case = old_balance_check > current_balance_check
         
         if is_loss_case:
             # For MY CLIENTS: Calculate pending from NET LOSS (Old Balance - Current Balance)
@@ -2032,24 +2029,14 @@ def pending_summary(request):
                     if my_share_pct is None:
                         my_share_pct = Decimal(0)
             else:
-                # COMPANY CLIENTS: Use net_client_tally (which already accounts for company share)
-                my_share = net_client_tally
+                # COMPANY CLIENTS: Calculate from Total Loss (same as MY CLIENTS)
+                # First, we need to calculate Total Loss, but we'll do it after old_balance is calculated
+                # For now, set a placeholder - will be recalculated below
+                my_share = Decimal(0)  # Will be recalculated from Total Loss
             
-            # Get the raw amounts from net_tallies for company clients
+            # Get the raw amounts from net_tallies for company clients (for reference)
             your_share_from_losses = net_tallies["your_share_from_losses"]
             company_share_from_losses = net_tallies["company_share_from_losses"]
-            
-            # For company clients: Show company net tally (what company owes you after netting)
-            if client_exchange.client.is_company_client:
-                # Net Company Tally = (Company 9% from losses) - (Company 9% from profits) - payments
-                # If positive: Company owes you (show it)
-                # If negative: You owe company (don't show in "Clients Owe You" section)
-                company_share = net_company_tally if net_company_tally > 0 else Decimal(0)
-                combined_share = my_share + company_share
-            else:
-                # My clients: No company share
-                company_share = Decimal(0)
-                combined_share = my_share
             
             # Calculate old balance (balance before the loss)
             # CRITICAL: For MY CLIENTS, use get_old_balance_after_settlement()
@@ -2112,20 +2099,51 @@ def pending_summary(request):
             # This is the 100% loss that the client has incurred
             total_loss = old_balance - current_balance
             
-            # For my clients: net_amount is outstanding (Your Share only)
-            # For company clients: net_amount is net client tally
             # Get share percentages for display - ALWAYS fetch from ClientExchange (source of truth)
-            # CRITICAL: These percentages MUST be included in the data object for the template
-            my_share_pct = client_exchange.my_share_pct
-            if my_share_pct is None:
-                my_share_pct = Decimal(0)
-            
+            my_share_pct = client_exchange.my_share_pct or Decimal(0)
             if client_exchange.client.is_company_client:
-                company_share_pct = client_exchange.company_share_pct
-                if company_share_pct is None:
-                    company_share_pct = Decimal(0)
+                company_share_pct = client_exchange.company_share_pct or Decimal(0)
             else:
                 company_share_pct = Decimal(0)
+            
+            # For company clients: Recalculate Combined Share from Total Loss
+            # Combined Share = Total Loss × (My Share % / 100)
+            # This ensures Combined Share is always 10% of Total Loss (if my_share_pct = 10%)
+            if client_exchange.client.is_company_client:
+                # Recalculate from Total Loss to ensure accuracy
+                combined_share_from_loss = (total_loss * my_share_pct) / Decimal(100)
+                combined_share_from_loss = combined_share_from_loss.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                
+                # My Share = 1% of Total Loss
+                my_share_from_loss = (total_loss * Decimal(1)) / Decimal(100)
+                my_share_from_loss = my_share_from_loss.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                
+                # Company Share = 9% of Total Loss
+                company_share_from_loss = (total_loss * Decimal(9)) / Decimal(100)
+                company_share_from_loss = company_share_from_loss.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                
+                # Subtract any payments already received
+                client_payments = Transaction.objects.filter(
+                    client_exchange=client_exchange,
+                    transaction_type=Transaction.TYPE_SETTLEMENT,
+                    client_share_amount=0,  # Client pays
+                    your_share_amount__gt=0  # You receive
+                ).aggregate(total=Sum("your_share_amount"))["total"] or Decimal(0)
+                
+                # Adjust shares by subtracting payments
+                my_share = max(Decimal(0), my_share_from_loss - (client_payments * Decimal(1)) / Decimal(100))
+                company_share = max(Decimal(0), company_share_from_loss - (client_payments * Decimal(9)) / Decimal(100))
+                combined_share = max(Decimal(0), combined_share_from_loss - client_payments)
+                
+                # Quantize after adjustments
+                my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            else:
+                # MY CLIENTS: Combined Share = My Share (no company share)
+                # my_share is already calculated above from net_loss
+                company_share = Decimal(0)
+                combined_share = my_share
             
             clients_owe_list.append({
                 "client_id": client_exchange.client.pk,
@@ -2138,8 +2156,8 @@ def pending_summary(request):
                 "current_balance": current_balance,  # Current balance (for total_loss calculation)
                 "exchange_balance": current_balance,  # Current balance (renamed for clarity)
                 "total_loss": total_loss,  # Total Loss = Old Balance - Current Balance (100% loss)
-                "pending_amount": my_share,  # Pending amount (client owes you) - calculated from LOSS transactions for MY CLIENTS
-                "company_pending": net_company_tally if client_exchange.client.is_company_client else Decimal(0),  # Net company tally
+                "pending_amount": my_share,  # Pending amount (client owes you) - calculated from Total Loss × My Share %
+                "company_pending": company_share if client_exchange.client.is_company_client else Decimal(0),  # Company share pending
                 "your_earnings": your_earnings,  # Your earnings from company split (1% of losses + 1% of profits)
                 "my_share": my_share,  # Admin's share of loss (admin earns this)
                 "company_share": company_share,  # Company's share of loss (company earns this, 0 for my clients)
@@ -2160,15 +2178,14 @@ def pending_summary(request):
         # For MY CLIENTS: Check Current Balance > Old Balance (not net_client_tally)
         # For COMPANY CLIENTS: Use net_client_tally < 0
         
-        # First, check if this is a profit case for MY CLIENTS
-        if not client_exchange.client.is_company_client:
-            # MY CLIENTS: Check if Current Balance > Old Balance (profit case)
-            old_balance_check = get_old_balance_after_settlement(client_exchange)
-            current_balance_check = profit_loss_data["exchange_balance"]
-            is_profit_case = current_balance_check > old_balance_check
-        else:
-            # COMPANY CLIENTS: Use net_client_tally
-            is_profit_case = net_client_tally < 0
+        # For BOTH MY CLIENTS and COMPANY CLIENTS: Use Old Balance vs Current Balance
+        # This is the correct way to determine profit/loss
+        old_balance_check = get_old_balance_after_settlement(client_exchange)
+        current_balance_check = profit_loss_data["exchange_balance"]
+        
+        # Profit case: Current Balance > Old Balance (you owe client)
+        # Loss case: Old Balance > Current Balance (client owes you)
+        is_profit_case = current_balance_check > old_balance_check
         
         if is_profit_case:
             # Calculate shares for display
@@ -2275,16 +2292,17 @@ def pending_summary(request):
                     # Debug print removed to prevent BrokenPipeError
                     continue  # Skip adding to you_owe_list
                 
-                # Calculate NET CHANGE = Current Balance - Old Balance
-                # Positive = profit (you owe client), Negative = loss (client owes you)
-                net_change = current_balance - old_balance
-                
                 # Get my_share_pct from client_exchange
                 my_share_pct = client_exchange.my_share_pct
                 
-                # Calculate Combined Share = Net Change × My Share %
-                # Formula: (Current Balance - Old Balance) × (My Share % / 100)
-                combined_share_raw = (net_change * my_share_pct) / Decimal(100)
+                # Calculate Total Profit = Old Balance - Current Balance
+                # Negative = profit (you owe client), Positive = loss (client owes you)
+                total_profit = old_balance - current_balance
+                
+                # Calculate Combined Share = Total Profit × My Share %
+                # Formula: (Old Balance - Current Balance) × (My Share % / 100)
+                # Example: (300 - 1000) × 10% = -700 × 10% = -70
+                combined_share_raw = (total_profit * my_share_pct) / Decimal(100)
                 combined_share_raw = combined_share_raw.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
                 
                 # Get settlements where you paid client (reduces what you owe)
@@ -2297,26 +2315,24 @@ def pending_summary(request):
                 ).aggregate(total=Sum("client_share_amount"))["total"] or Decimal(0)
                 
                 # Adjust combined_share by subtracting settlements paid
-                # Since we're in you_owe_list, combined_share_raw should be positive (profit)
-                # After subtracting payments, if still positive, you still owe (make it negative)
-                # If it becomes zero or negative, you've fully paid
-                if combined_share_raw > 0:
-                    # You owe client: subtract payments made
-                    combined_share = combined_share_raw - admin_payments_to_client
+                # Since we're in you_owe_list, combined_share_raw should be negative (profit, you owe client)
+                # After subtracting payments, if still negative, you still owe (keep it negative)
+                # If it becomes zero or positive, you've fully paid
+                if combined_share_raw < 0:
+                    # You owe client: subtract payments made (payments reduce the amount you owe)
+                    combined_share = combined_share_raw + admin_payments_to_client  # Adding because payments reduce negative amount
                     # If fully paid or overpaid, set to zero
-                    if combined_share <= 0:
+                    if combined_share >= 0:
                         combined_share = Decimal(0)
-                    # CRITICAL: Make it NEGATIVE to indicate "you owe client"
-                    # Sign rule: (- value) = YOU owe client
-                    combined_share = -combined_share
                 else:
-                    # This shouldn't happen in you_owe_list (should be profit, not loss)
+                    # This shouldn't happen in you_owe_list (should be negative profit)
                     combined_share = Decimal(0)
                 
                 combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
                 
                 # For MY CLIENTS: my_share = combined_share (no company share)
-                my_share = combined_share
+                # combined_share is negative (e.g., -70), keep it negative for display
+                my_share = combined_share  # Keep negative (e.g., -70.0)
                 company_share = Decimal(0)
                 # For MY CLIENTS: unpaid_profit is the absolute value of combined_share (since it's negative)
                 unpaid_profit = abs(combined_share) if combined_share < 0 else Decimal(0)
@@ -2327,13 +2343,6 @@ def pending_summary(request):
             should_show = combined_share < 0 if not client_exchange.client.is_company_client else unpaid_profit > 0
             
             if should_show:
-                # For company clients: Recalculate combined share (Your Cut + Company Net)
-                # For my clients: combined_share is already calculated correctly above
-                if client_exchange.client.is_company_client:
-                    combined_share = my_share + company_share
-                else:
-                    combined_share = my_share
-                
                 # Get old_balance and current_balance for display
                 if client_exchange.client.is_company_client:
                     old_balance = get_old_balance_after_settlement(client_exchange)
@@ -2353,6 +2362,89 @@ def pending_summary(request):
                 else:
                     company_share_pct = Decimal(0)
                 
+                # Calculate Total Profit = Old Balance - Current Balance
+                # Negative = profit (you owe client), Positive = loss (client owes you)
+                total_funding = profit_loss_data["total_funding"]
+                exchange_balance = profit_loss_data["exchange_balance"]
+                total_profit = old_balance - exchange_balance
+                
+                # Recalculate Combined Share from Total Profit × Share %
+                # For company clients: Combined Share = Total Profit × Company Share % (10%)
+                # For my clients: Combined Share = Total Profit × My Share % (10%)
+                # Example: (300 - 1000) × 10% = -700 × 10% = -70
+                if client_exchange.client.is_company_client:
+                    # For company clients, use company_share_pct (10%) for Combined Share
+                    share_pct_for_combined = company_share_pct
+                else:
+                    # For my clients, use my_share_pct (10%) for Combined Share
+                    share_pct_for_combined = my_share_pct
+                
+                combined_share_from_total_profit = (total_profit * share_pct_for_combined) / Decimal(100)
+                combined_share_from_total_profit = combined_share_from_total_profit.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                
+                # Subtract any payments already made
+                admin_payments_to_client = Transaction.objects.filter(
+                    client_exchange=client_exchange,
+                    transaction_type=Transaction.TYPE_SETTLEMENT,
+                    client_share_amount__gt=0,  # Client receives
+                    your_share_amount=0  # You pay
+                ).aggregate(total=Sum("client_share_amount"))["total"] or Decimal(0)
+                
+                # Adjust combined share by subtracting payments
+                # Since total_profit is negative (you owe client), combined_share_from_total_profit is also negative
+                # After subtracting payments, if still negative, you still owe (keep it negative)
+                # If it becomes zero or positive, you've fully paid
+                if combined_share_from_total_profit < 0:
+                    # You owe client: subtract payments made (payments reduce the amount you owe)
+                    combined_share = combined_share_from_total_profit + admin_payments_to_client  # Adding because payments reduce negative amount
+                    # If fully paid or overpaid, set to zero
+                    if combined_share >= 0:
+                        combined_share = Decimal(0)
+                    # Keep combined_share negative for display (e.g., -60.0)
+                else:
+                    # This shouldn't happen in you_owe_list (should be negative profit)
+                    combined_share = Decimal(0)
+                
+                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                
+                # For company clients: Split combined share into my_share (1%) and company_share (9%)
+                if client_exchange.client.is_company_client:
+                    # My Share = 1% of Total Profit (total_profit is negative, so this will be negative)
+                    my_share_from_total = (total_profit * Decimal(1)) / Decimal(100)
+                    my_share_from_total = my_share_from_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    
+                    # Company Share = 9% of Total Profit (total_profit is negative, so this will be negative)
+                    company_share_from_total = (total_profit * Decimal(9)) / Decimal(100)
+                    company_share_from_total = company_share_from_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    
+                    # Adjust by subtracting payments proportionally
+                    # Since total_profit is negative (you owe), my_share_from_total and company_share_from_total are also negative
+                    # Payments reduce the amount you owe, so we add them (both are positive)
+                    if combined_share_from_total_profit < 0:
+                        # Calculate remaining amounts after payments
+                        # my_share_from_total is negative (e.g., -6.0), payments reduce it
+                        my_share_remaining = my_share_from_total + (admin_payments_to_client * Decimal(1)) / Decimal(100)
+                        company_share_remaining = company_share_from_total + (admin_payments_to_client * Decimal(9)) / Decimal(100)
+                        
+                        # If fully paid or overpaid, set to zero
+                        # Otherwise, keep the negative value (what you still owe) for display
+                        if my_share_remaining >= 0:
+                            my_share = Decimal(0)
+                        else:
+                            my_share = my_share_remaining  # Keep negative for display (e.g., -6.0)
+                        
+                        if company_share_remaining >= 0:
+                            company_share = Decimal(0)
+                        else:
+                            company_share = company_share_remaining  # Keep negative for display (e.g., -54.0)
+                    else:
+                        my_share = Decimal(0)
+                        company_share = Decimal(0)
+                    
+                    my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                # For my clients: my_share = combined_share (already calculated above, keep negative)
+                
                 you_owe_list.append({
                     "client_id": client_exchange.client.pk,
                     "client_name": client_exchange.client.name,
@@ -2360,15 +2452,16 @@ def pending_summary(request):
                     "exchange_name": client_exchange.exchange.name,
                     "exchange_id": client_exchange.exchange.pk,
                     "client_exchange_id": client_exchange.pk,
-                    "client_profit": my_share if client_exchange.client.is_company_client else combined_share,  # For company clients: your payable (₹9), for my clients: combined_share (₹10)
-                    "my_share": my_share,  # Net amount you owe client (for company clients: 1% of profit = ₹9, for my clients: combined_share = ₹10)
-                    "company_share": company_share,  # Company's retained portion (9% of profit = ₹81, informational only)
-                    "combined_share": combined_share,  # For my clients: profit × my_share_pct (₹10), for company clients: total company portion (10% of profit = ₹90)
+                    "client_profit": my_share if client_exchange.client.is_company_client else combined_share,  # For company clients: your payable (1% of profit), for my clients: combined_share (10% of profit)
+                    "my_share": my_share,  # Net amount you owe client (for company clients: 1% of profit, for my clients: combined_share = 10% of profit)
+                    "company_share": company_share,  # Company's retained portion (9% of profit, informational only)
+                    "combined_share": combined_share,  # Combined Share = Total Profit × My Share % (e.g., -700 × 10% = -70)
                     "my_share_pct": my_share_pct,  # My share percentage
                     "company_share_pct": company_share_pct,  # Company share percentage
                     "is_company_client": client_exchange.client.is_company_client,  # Client type flag
-                    "total_funding": profit_loss_data["total_funding"],
-                    "exchange_balance": profit_loss_data["exchange_balance"],
+                    "total_funding": total_funding,
+                    "exchange_balance": exchange_balance,
+                    "total_profit": total_profit,  # Total Profit = Old Balance - Current Balance
                     "old_balance": old_balance,  # Old Balance for both MY CLIENTS and COMPANY CLIENTS (for display/debugging)
                     "company_pending": abs(net_company_tally) if net_company_tally < 0 else Decimal(0),  # Net amount you owe company
                     "your_earnings": your_earnings,  # Your earnings from company split
@@ -2476,15 +2569,14 @@ def export_pending_csv(request):
         profit_loss_data = calculate_client_profit_loss(client_exchange)
         client_profit_loss = profit_loss_data["client_profit_loss"]
         
-        # First, check if this is a loss case for MY CLIENTS
-        if not client_exchange.client.is_company_client:
-            # MY CLIENTS: Check if Old Balance > Current Balance (loss case)
-            old_balance_check = get_old_balance_after_settlement(client_exchange)
-            current_balance_check = profit_loss_data["exchange_balance"]
-            is_loss_case = old_balance_check > current_balance_check
-        else:
-            # COMPANY CLIENTS: Use net_client_tally
-            is_loss_case = net_client_tally > 0
+        # For BOTH MY CLIENTS and COMPANY CLIENTS: Use Old Balance vs Current Balance
+        # This is the correct way to determine profit/loss
+        old_balance_check = get_old_balance_after_settlement(client_exchange)
+        current_balance_check = profit_loss_data["exchange_balance"]
+        
+        # Loss case: Old Balance > Current Balance (client owes you)
+        # Profit case: Current Balance > Old Balance (you owe client)
+        is_loss_case = old_balance_check > current_balance_check
         
         if is_loss_case:
             # For MY CLIENTS: Calculate pending from NET LOSS (Old Balance - Current Balance)
@@ -2835,8 +2927,61 @@ def export_pending_csv(request):
                 my_share_pct = client_exchange.my_share_pct or Decimal(0)
                 company_share_pct = (client_exchange.company_share_pct or Decimal(0)) if client_exchange.client.is_company_client else Decimal(0)
                 
-                # Calculate total profit (100% profit = Current Balance - Old Balance)
-                total_profit = current_balance - old_balance
+                # Calculate total profit = Old Balance - Current Balance (negative = you owe client)
+                # This matches the UI calculation in pending_summary
+                total_profit = old_balance - current_balance
+                
+                # For company clients, recalculate combined_share from total_profit to match UI
+                if client_exchange.client.is_company_client:
+                    # Use company_share_pct (10%) for Combined Share
+                    combined_share_from_total_profit = (total_profit * company_share_pct) / Decimal(100)
+                    combined_share_from_total_profit = combined_share_from_total_profit.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    
+                    # Subtract any payments already made
+                    admin_payments_to_client = Transaction.objects.filter(
+                        client_exchange=client_exchange,
+                        transaction_type=Transaction.TYPE_SETTLEMENT,
+                        client_share_amount__gt=0,
+                        your_share_amount=0
+                    ).aggregate(total=Sum("client_share_amount"))["total"] or Decimal(0)
+                    
+                    # Adjust combined share by subtracting payments
+                    if combined_share_from_total_profit < 0:
+                        combined_share = combined_share_from_total_profit + admin_payments_to_client
+                        if combined_share >= 0:
+                            combined_share = Decimal(0)
+                    else:
+                        combined_share = Decimal(0)
+                    
+                    combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    
+                    # Recalculate my_share and company_share from total_profit
+                    my_share_from_total = (total_profit * Decimal(1)) / Decimal(100)
+                    my_share_from_total = my_share_from_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    
+                    company_share_from_total = (total_profit * Decimal(9)) / Decimal(100)
+                    company_share_from_total = company_share_from_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    
+                    # Adjust by subtracting payments proportionally
+                    if combined_share_from_total_profit < 0:
+                        my_share_remaining = my_share_from_total + (admin_payments_to_client * Decimal(1)) / Decimal(100)
+                        company_share_remaining = company_share_from_total + (admin_payments_to_client * Decimal(9)) / Decimal(100)
+                        
+                        if my_share_remaining >= 0:
+                            my_share = Decimal(0)
+                        else:
+                            my_share = my_share_remaining  # Keep negative
+                        
+                        if company_share_remaining >= 0:
+                            company_share = Decimal(0)
+                        else:
+                            company_share = company_share_remaining  # Keep negative
+                    else:
+                        my_share = Decimal(0)
+                        company_share = Decimal(0)
+                    
+                    my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
                 
                 you_owe_list.append({
                     "client_code": client_exchange.client.code,
@@ -2844,12 +2989,12 @@ def export_pending_csv(request):
                     "exchange_name": client_exchange.exchange.name,
                     "old_balance": old_balance,
                     "current_balance": current_balance,
-                    "total_profit": total_profit,
-                    "my_share": abs(my_share) if my_share < 0 else my_share,
+                    "total_profit": total_profit,  # Negative value (old_balance - current_balance)
+                    "my_share": my_share,  # Keep negative for "You Owe Clients"
                     "my_share_pct": my_share_pct,
-                    "company_share": abs(company_share) if company_share < 0 else company_share,
+                    "company_share": company_share,  # Keep negative for "You Owe Clients"
                     "company_share_pct": company_share_pct,
-                    "combined_share": abs(combined_share) if combined_share < 0 else combined_share,
+                    "combined_share": combined_share,  # Keep negative for "You Owe Clients"
                     "is_company_client": client_exchange.client.is_company_client,
                 })
     
@@ -3024,7 +3169,39 @@ def report_overview(request):
         client_type_filter = 'all'
     client_id = request.GET.get("client")  # Specific client ID
     
-    # Time travel parameters
+    # Month selection parameter
+    month_str = request.GET.get("month", today.strftime("%Y-%m"))
+    try:
+        year, month = map(int, month_str.split("-"))
+        selected_month_start = date(year, month, 1)
+        if month == 12:
+            selected_month_end = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            selected_month_end = date(year, month + 1, 1) - timedelta(days=1)
+    except (ValueError, IndexError):
+        selected_month_start = date(today.year, today.month, 1)
+        if today.month == 12:
+            selected_month_end = date(today.year + 1, 1, 1) - timedelta(days=1)
+        else:
+            selected_month_end = date(today.year, today.month + 1, 1) - timedelta(days=1)
+    
+    # Month selection parameter
+    month_str = request.GET.get("month", today.strftime("%Y-%m"))
+    try:
+        year, month = map(int, month_str.split("-"))
+        selected_month_start = date(year, month, 1)
+        if month == 12:
+            selected_month_end = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            selected_month_end = date(year, month + 1, 1) - timedelta(days=1)
+    except (ValueError, IndexError):
+        selected_month_start = date(today.year, today.month, 1)
+        if today.month == 12:
+            selected_month_end = date(today.year + 1, 1, 1) - timedelta(days=1)
+        else:
+            selected_month_end = date(today.year, today.month + 1, 1) - timedelta(days=1)
+    
+    # Time travel parameters (override month selection if provided)
     start_date_str = request.GET.get("start_date")
     end_date_str = request.GET.get("end_date")
     as_of_str = request.GET.get("date")
@@ -3040,6 +3217,9 @@ def report_overview(request):
         time_travel_mode = True
         as_of_filter = date.fromisoformat(as_of_str)
         date_filter = {"date__lte": as_of_filter}
+    elif not time_travel_mode:
+        # Apply month filter if no time travel parameters
+        date_filter = {"date__gte": selected_month_start, "date__lte": selected_month_end}
     
     # Base queryset with time travel filter if applicable, always filtered by user
     user_filter = {"client_exchange__client__user": request.user}
@@ -3058,6 +3238,41 @@ def report_overview(request):
         base_qs = Transaction.objects.filter(**user_filter, **date_filter)
     else:
         base_qs = Transaction.objects.filter(**user_filter)
+    
+    # Filter to only show transactions after payments are recorded (settled)
+    # Get all client_exchanges that have at least one settlement
+    settled_client_exchanges = Transaction.objects.filter(
+        **user_filter,
+        transaction_type=Transaction.TYPE_SETTLEMENT
+    ).values_list('client_exchange_id', flat=True).distinct()
+    
+    # For each settled client_exchange, get the latest settlement date
+    # Only include profit/loss transactions up to that settlement date
+    settled_data = {}
+    for client_exchange_id in settled_client_exchanges:
+        latest_settlement = Transaction.objects.filter(
+            client_exchange_id=client_exchange_id,
+            transaction_type=Transaction.TYPE_SETTLEMENT
+        ).order_by('-date', '-created_at').first()
+        if latest_settlement:
+            settled_data[client_exchange_id] = latest_settlement.date
+    
+    # Filter base_qs to only include:
+    # 1. SETTLEMENT and FUNDING transactions (always include)
+    # 2. PROFIT/LOSS transactions only if they're for settled client_exchanges and before/on settlement date
+    from django.db.models import Q, F
+    settled_filter = Q(transaction_type__in=[Transaction.TYPE_SETTLEMENT, Transaction.TYPE_FUNDING])
+    
+    # Add profit/loss transactions that are settled
+    for client_exchange_id, settlement_date in settled_data.items():
+        settled_filter |= Q(
+            client_exchange_id=client_exchange_id,
+            transaction_type__in=[Transaction.TYPE_PROFIT, Transaction.TYPE_LOSS],
+            date__lte=settlement_date
+        )
+    
+    # Apply the filter
+    base_qs = base_qs.filter(settled_filter)
     
     # Get clients for dropdown (filtered by client_type if applicable)
     clients_qs = Client.objects.filter(user=request.user, is_active=True)
@@ -3256,6 +3471,7 @@ def report_overview(request):
         "all_clients": all_clients,
         "selected_client": selected_client,
         "selected_client_id": int(client_id) if client_id else None,
+        "today": today,
         "total_turnover": total_turnover,
         "your_total_profit": your_total_profit,
         "company_profit": company_profit,
@@ -3282,6 +3498,9 @@ def report_overview(request):
         "end_date_str": end_date_str,
         "as_of_str": as_of_str,
         "time_travel_transactions": time_travel_transactions,
+        "selected_month": month_str,
+        "selected_month_start": selected_month_start,
+        "selected_month_end": selected_month_end,
     }
     return render(request, "core/reports/overview.html", context)
 

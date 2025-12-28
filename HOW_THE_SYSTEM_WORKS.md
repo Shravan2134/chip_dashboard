@@ -17,7 +17,7 @@
 ## System Overview
 
 ### What This System Does
-This is a **Broker Portal** that manages financial transactions between you (the broker), your clients, and exchanges. It tracks:
+This is a **Transaction Hub** that manages financial transactions between you (the broker), your clients, and exchanges. It tracks:
 - How much money you give to clients (funding)
 - How much clients have in their exchange accounts (balance)
 - How much clients owe you (pending losses)
@@ -1382,7 +1382,7 @@ transactions = Transaction.objects.filter(
 
 ## End of Document
 
-This document explains how the Broker Portal system works from an operational perspective. For technical implementation details, see `PROJECT_DOCUMENTATION.md`.
+This document explains how the Transaction Hub system works from an operational perspective. For technical implementation details, see `PROJECT_DOCUMENTATION.md`.
 
 **Key Takeaways**:
 1. System uses three separate ledgers that work independently
@@ -1394,6 +1394,7 @@ This document explains how the Broker Portal system works from an operational pe
 ---
 
 **Last Updated**: 2025-01-15
+
 
 
 

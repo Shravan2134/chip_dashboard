@@ -1,6 +1,6 @@
 {% extends "core/base.html" %}
 
-{% block title %}Reports · Broker Portal{% endblock %}
+{% block title %}Reports · Transaction Hub{% endblock %}
 {% block page_title %}Reports & Analytics{% endblock %}
 {% block page_subtitle %}Comprehensive insights into your business performance{% endblock %}
 
@@ -9,149 +9,102 @@
     .reports-wrapper {
         display: flex;
         flex-direction: column;
-        gap: 24px;
+        gap: 20px;
     }
     
-    .section-header {
-        margin-bottom: 16px;
-    }
-    
-    .section-header h3 {
-        font-size: 16px;
-        font-weight: 600;
-        color: #111827;
-        margin: 0 0 4px 0;
-    }
-    
-    .section-header p {
-        font-size: 13px;
-        color: #6b7280;
-        margin: 0;
-    }
-    
-    
-    .form-group-compact {
-        display: flex;
-        flex-direction: column;
-    }
-    
-    .form-group-compact label {
-        font-size: 12px;
-        font-weight: 500;
-        color: #374151;
-        margin-bottom: 6px;
-    }
-    
-    .form-group-compact input {
-        padding: 8px 12px;
-        border: 1px solid #d1d5db;
-        border-radius: 4px;
-        font-size: 14px;
-        background: #ffffff;
-    }
-    
-    .btn-compact {
-        padding: 8px 16px;
-        font-size: 13px;
-        border-radius: 4px;
-        border: 1px solid #d1d5db;
-        background: #ffffff;
-        color: #111827;
-        cursor: pointer;
-        font-weight: 500;
-    }
-    
-    .btn-compact-primary {
-        background: #111827;
-        color: #ffffff;
-        border-color: #111827;
-    }
-    
-    .btn-compact:hover {
-        background: #f3f4f6;
-    }
-    
-    .btn-compact-primary:hover {
-        background: #374151;
-    }
-    
-    .tabs-simple {
-        display: flex;
-        gap: 0;
-        border-bottom: 2px solid #e5e7eb;
-        margin-bottom: 24px;
-    }
-    
-    .tab-simple {
-        padding: 12px 24px;
-        text-decoration: none;
-        color: #6b7280;
-        font-size: 14px;
-        font-weight: 500;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -2px;
-        transition: all 0.2s;
-    }
-    
-    .tab-simple:hover {
-        color: #111827;
-    }
-    
-    .tab-simple.active {
-        color: #111827;
-        border-bottom-color: #111827;
-    }
-    
+    /* Basic Stat Cards */
     .stats-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 16px;
-        margin-bottom: 32px;
+        margin-bottom: 24px;
     }
     
     .stat-box {
         background: #ffffff;
-        border: 1px solid #e5e7eb;
-        border-radius: 6px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
         padding: 20px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    
+    .stat-box.profit {
+        border-left: 4px solid #28a745;
+    }
+    
+    .stat-box.loss {
+        border-left: 4px solid #dc3545;
+    }
+    
+    .stat-box.turnover {
+        border-left: 4px solid #007bff;
     }
     
     .stat-label {
-        font-size: 11px;
-        font-weight: 500;
-        color: #6b7280;
+        font-size: 12px;
+        font-weight: 600;
+        color: #666;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
         margin-bottom: 8px;
     }
     
     .stat-value {
-        font-size: 24px;
+        font-size: 28px;
         font-weight: 700;
-        color: #111827;
+        color: #333;
         margin-bottom: 4px;
     }
     
     .stat-note {
         font-size: 12px;
-        color: #9ca3af;
+        color: #999;
     }
     
-    .chart-section {
-        background: #ffffff;
-        border: 1px solid #e5e7eb;
-        border-radius: 6px;
-        padding: 20px;
+    /* Basic Tabs */
+    .tabs-simple {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid #ddd;
         margin-bottom: 20px;
     }
     
+    .tab-simple {
+        padding: 10px 20px;
+        text-decoration: none;
+        color: #666;
+        font-size: 14px;
+        font-weight: 500;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+    }
+    
+    .tab-simple:hover {
+        color: #333;
+        background: #f5f5f5;
+    }
+    
+    .tab-simple.active {
+        color: #007bff;
+        border-bottom-color: #007bff;
+    }
+    
+    /* Chart Sections */
+    .chart-section {
+        background: #ffffff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    
     .chart-header {
-        font-size: 15px;
+        font-size: 16px;
         font-weight: 600;
-        color: #111827;
+        color: #333;
         margin-bottom: 16px;
         padding-bottom: 12px;
-        border-bottom: 1px solid #f3f4f6;
+        border-bottom: 1px solid #ddd;
     }
     
     .charts-grid {
@@ -161,59 +114,141 @@
         margin-bottom: 20px;
     }
     
+    /* Client Filter */
+    .filter-section {
+        margin-bottom: 20px;
+        padding: 16px;
+        background: #f5f5f5;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    
+    .filter-section label {
+        font-size: 14px;
+        font-weight: 500;
+        color: #333;
+    }
+    
+    .filter-section select {
+        padding: 8px 12px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 14px;
+        background: #ffffff;
+        min-width: 250px;
+        cursor: pointer;
+    }
+    
+    .filter-section select:focus {
+        outline: none;
+        border-color: #007bff;
+    }
+    
+    .btn-compact {
+        padding: 8px 16px;
+        font-size: 13px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+        background: #ffffff;
+        color: #333;
+        cursor: pointer;
+        font-weight: 500;
+        text-decoration: none;
+    }
+    
+    .btn-compact:hover {
+        background: #f5f5f5;
+    }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+        .charts-grid {
+            grid-template-columns: 1fr;
+        }
+        
+        .stats-grid {
+            grid-template-columns: 1fr;
+        }
+    }
 </style>
 
 <!-- Chart.js Library -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
 <div class="reports-wrapper">
-<!-- Client Selector -->
-<div style="margin-bottom: 20px; display: flex; align-items: center; gap: 12px; padding: 16px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
-    <label style="font-size: 14px; font-weight: 500; color: #374151;">Filter by Client:</label>
-    <select id="clientFilter" onchange="changeClient(this.value)" style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background: #ffffff; min-width: 250px; cursor: pointer;">
+    <!-- Client Filter and Month Selection -->
+    <div class="filter-section">
+        <label>Filter by Client:</label>
+        <select id="clientFilter" onchange="changeClient(this.value)">
         <option value="">All Clients</option>
         {% for client in all_clients %}
         <option value="{{ client.id }}" {% if selected_client_id == client.id %}selected{% endif %}>{{ client.name }}{% if client.code %} ({{ client.code }}){% endif %}</option>
         {% endfor %}
     </select>
     {% if selected_client_id %}
-    <a href="?report_type={{ report_type }}{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" class="btn-compact" style="text-decoration: none;">Clear Client Filter</a>
+        <a href="?report_type={{ report_type }}{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}" class="btn-compact">Clear Filter</a>
     {% endif %}
     {% if not all_clients %}
-    <span style="font-size: 13px; color: #6b7280; font-style: italic;">No clients available</span>
+        <span style="font-size: 13px; color: #64748b; font-style: italic;">No clients available</span>
     {% endif %}
+    
+    <label style="margin-left: 20px;">Select Month:</label>
+    <input type="month" id="monthSelector" name="month" value="{{ selected_month|default:'' }}" max="{{ today|date:'Y-m' }}" onchange="changeMonth(this.value)" style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; background: #ffffff; min-width: 150px; cursor: pointer;">
 </div>
 
 <!-- Report Type Tabs -->
 <div class="tabs-simple">
-    <a href="?report_type=daily{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" onclick="return changeReportType('daily', event)" class="tab-simple {% if report_type == 'daily' %}active{% endif %}">
+    <a href="?report_type=daily{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}" onclick="return changeReportType('daily', event)" class="tab-simple {% if report_type == 'daily' %}active{% endif %}">
         Daily
     </a>
-    <a href="?report_type=weekly{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" onclick="return changeReportType('weekly', event)" class="tab-simple {% if report_type == 'weekly' %}active{% endif %}">
+    <a href="?report_type=weekly{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}" onclick="return changeReportType('weekly', event)" class="tab-simple {% if report_type == 'weekly' %}active{% endif %}">
         Weekly
     </a>
-    <a href="?report_type=monthly{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}" onclick="return changeReportType('monthly', event)" class="tab-simple {% if report_type == 'monthly' %}active{% endif %}">
+    <a href="?report_type=monthly{% if client_type_filter %}&client_type={{ client_type_filter }}{% endif %}{% if selected_client_id %}&client={{ selected_client_id }}{% endif %}{% if start_date_str %}&start_date={{ start_date_str }}{% endif %}{% if end_date_str %}&end_date={{ end_date_str }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}" onclick="return changeReportType('monthly', event)" class="tab-simple {% if report_type == 'monthly' %}active{% endif %}">
         Monthly
     </a>
 </div>
 
 <!-- Summary Stats -->
 <div class="stats-grid">
-    <div class="stat-box">
+        <div class="stat-box turnover">
         <div class="stat-label">Total Turnover</div>
         <div class="stat-value">₹ {{ total_turnover|default:0|floatformat:1 }}</div>
         <div class="stat-note">All-time transaction volume</div>
     </div>
-    <div class="stat-box">
+        <div class="stat-box profit">
         <div class="stat-label">Your Total Profit</div>
         <div class="stat-value">₹ {{ your_total_profit|default:0|floatformat:1 }}</div>
         <div class="stat-note">Your share from profits</div>
     </div>
     {% if client_type_filter != 'my' %}
-    <div class="stat-box">
+        <div class="stat-box profit">
         <div class="stat-label">Company Profit</div>
         <div class="stat-value">₹ {{ company_profit|default:0|floatformat:1 }}</div>
         <div class="stat-note">Company share from transactions</div>
+    </div>
+    {% endif %}
+        {% if report_type == 'daily' %}
+        <div class="stat-box">
+            <div class="stat-label">Net Profit (30 Days)</div>
+            <div class="stat-value" id="netProfit30Days">₹ 0.0</div>
+            <div class="stat-note">Profit - Loss (last 30 days)</div>
+        </div>
+        {% elif report_type == 'weekly' %}
+        <div class="stat-box">
+            <div class="stat-label">Net Profit (4 Weeks)</div>
+            <div class="stat-value" id="netProfit4Weeks">₹ 0.0</div>
+            <div class="stat-note">Profit - Loss (last 4 weeks)</div>
+        </div>
+        {% elif report_type == 'monthly' %}
+        <div class="stat-box">
+            <div class="stat-label">Net Profit (6 Months)</div>
+            <div class="stat-value" id="netProfit6Months">₹ 0.0</div>
+            <div class="stat-note">Profit - Loss (last 6 months)</div>
     </div>
     {% endif %}
 </div>
@@ -223,6 +258,11 @@
 <div class="chart-section">
     <div class="chart-header">Daily Trends (Last 30 Days)</div>
     <canvas id="dailyTrendsChart" style="max-height: 400px;"></canvas>
+</div>
+
+    <div class="chart-section">
+        <div class="chart-header">Net Profit Trend (Last 30 Days)</div>
+        <canvas id="netProfitChart" style="max-height: 350px;"></canvas>
 </div>
 
 <div class="charts-grid">
@@ -246,6 +286,11 @@
     <canvas id="weeklyTrendsChart" style="max-height: 400px;"></canvas>
 </div>
 
+    <div class="chart-section">
+        <div class="chart-header">Net Profit by Week (Last 4 Weeks)</div>
+        <canvas id="netProfitWeeklyChart" style="max-height: 350px;"></canvas>
+</div>
+
 <div class="charts-grid">
     <div class="chart-section">
         <div class="chart-header">Transaction Type Breakdown</div>
@@ -265,6 +310,11 @@
     <canvas id="monthlyTrendsChart" style="max-height: 400px;"></canvas>
 </div>
 
+    <div class="chart-section">
+        <div class="chart-header">Net Profit by Month (Last 6 Months)</div>
+        <canvas id="netProfitMonthlyChart" style="max-height: 350px;"></canvas>
+</div>
+
 <div class="charts-grid">
     <div class="chart-section">
         <div class="chart-header">Transaction Type Breakdown</div>
@@ -279,8 +329,6 @@
 {% endif %}
 </div>
 
-<!-- Transactions Table -->
-
 <script>
 // Disable automatic scroll restoration
 if ('scrollRestoration' in history) {
@@ -293,97 +341,89 @@ function changeReportType(type, event) {
     const currentScrollY = window.scrollY || window.pageYOffset;
     const url = new URL(window.location);
     
-    // Preserve time travel parameters if they exist
     const startDate = url.searchParams.get('start_date');
     const endDate = url.searchParams.get('end_date');
     const dateParam = url.searchParams.get('date');
     const clientType = url.searchParams.get('client_type');
     const clientId = url.searchParams.get('client');
+    const month = url.searchParams.get('month');
     
-    // Build new URL
     url.searchParams.set('report_type', type);
     if (startDate) url.searchParams.set('start_date', startDate);
     if (endDate) url.searchParams.set('end_date', endDate);
     if (dateParam) url.searchParams.set('date', dateParam);
     if (clientType) url.searchParams.set('client_type', clientType);
     if (clientId) url.searchParams.set('client', clientId);
+    if (month) url.searchParams.set('month', month);
     
-    // Store scroll position to restore after page load
     sessionStorage.setItem('reportScrollPosition', currentScrollY);
     window.location.href = url.toString();
     return false;
 }
 
-// Preserve scroll position when changing client type
-function changeClientType(type, event) {
-    event.preventDefault();
-    const currentScrollY = window.scrollY || window.pageYOffset;
-    const url = new URL(window.location);
-    
-    // Preserve time travel parameters if they exist
-    const startDate = url.searchParams.get('start_date');
-    const endDate = url.searchParams.get('end_date');
-    const dateParam = url.searchParams.get('date');
-    const reportType = url.searchParams.get('report_type') || 'monthly';
-    const clientId = url.searchParams.get('client');
-    
-    // Build new URL
-    url.searchParams.set('report_type', reportType);
-    if (startDate) url.searchParams.set('start_date', startDate);
-    if (endDate) url.searchParams.set('end_date', endDate);
-    if (dateParam) url.searchParams.set('date', dateParam);
-    if (clientId) url.searchParams.set('client', clientId);
-    if (type) {
-        url.searchParams.set('client_type', type);
-    } else {
-        url.searchParams.delete('client_type');
-    }
-    
-    // Store scroll position to restore after page load
-    sessionStorage.setItem('reportScrollPosition', currentScrollY);
-    window.location.href = url.toString();
-    return false;
-}
-
-// Preserve scroll position when changing client
 function changeClient(clientId) {
     const currentScrollY = window.scrollY || window.pageYOffset;
     const url = new URL(window.location);
     
-    // Preserve all parameters
     const startDate = url.searchParams.get('start_date');
     const endDate = url.searchParams.get('end_date');
     const dateParam = url.searchParams.get('date');
     const reportType = url.searchParams.get('report_type') || 'monthly';
     const clientType = url.searchParams.get('client_type');
+    const month = url.searchParams.get('month');
     
-    // Build new URL
     url.searchParams.set('report_type', reportType);
     if (startDate) url.searchParams.set('start_date', startDate);
     if (endDate) url.searchParams.set('end_date', endDate);
     if (dateParam) url.searchParams.set('date', dateParam);
     if (clientType) url.searchParams.set('client_type', clientType);
+    if (month) url.searchParams.set('month', month);
     if (clientId) {
         url.searchParams.set('client', clientId);
     } else {
         url.searchParams.delete('client');
     }
     
-    // Store scroll position to restore after page load
     sessionStorage.setItem('reportScrollPosition', currentScrollY);
     window.location.href = url.toString();
 }
 
-// Restore scroll position immediately on page load
+function changeMonth(monthValue) {
+    const currentScrollY = window.scrollY || window.pageYOffset;
+    const url = new URL(window.location);
+    
+    const startDate = url.searchParams.get('start_date');
+    const endDate = url.searchParams.get('end_date');
+    const dateParam = url.searchParams.get('date');
+    const reportType = url.searchParams.get('report_type') || 'monthly';
+    const clientType = url.searchParams.get('client_type');
+    const clientId = url.searchParams.get('client');
+    
+    url.searchParams.set('report_type', reportType);
+    // Remove time travel params when selecting month
+    url.searchParams.delete('start_date');
+    url.searchParams.delete('end_date');
+    url.searchParams.delete('date');
+    if (clientType) url.searchParams.set('client_type', clientType);
+    if (clientId) url.searchParams.set('client', clientId);
+    if (monthValue) {
+        url.searchParams.set('month', monthValue);
+    } else {
+        url.searchParams.delete('month');
+    }
+    
+    sessionStorage.setItem('reportScrollPosition', currentScrollY);
+    window.location.href = url.toString();
+}
+
+// Restore scroll position
 (function() {
     const savedScroll = sessionStorage.getItem('reportScrollPosition');
     if (savedScroll !== null) {
         const scrollPos = parseInt(savedScroll);
-        // Restore immediately
         window.scrollTo(0, scrollPos);
         sessionStorage.removeItem('reportScrollPosition');
         
-        // Also restore after DOM is ready and after a short delay
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', function() {
                 window.scrollTo(0, scrollPos);
@@ -395,20 +435,49 @@ function changeClient(clientId) {
     }
 })();
 
-// Initialize all charts after DOM and Chart.js are loaded
+// Initialize all charts
 function initializeCharts() {
-    // Check if Chart.js is loaded
     if (typeof Chart === 'undefined') {
-        // Retry after a short delay if Chart.js isn't loaded yet
         setTimeout(initializeCharts, 100);
         return;
     }
 
-    // Wait for DOM to be ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initializeCharts);
         return;
     }
+
+    // Basic color palette
+    const colors = {
+        profit: '#28a745',
+        loss: '#dc3545',
+        turnover: '#007bff',
+        funding: '#17a2b8',
+        settlement: '#6c757d',
+        background: {
+            profit: 'rgba(40, 167, 69, 0.1)',
+            loss: 'rgba(220, 53, 69, 0.1)',
+            turnover: 'rgba(0, 123, 255, 0.1)',
+        }
+    };
+
+    // Calculate net profit for stat box
+    {% if report_type == 'daily' %}
+    const dailyProfit = {{ daily_profit|safe }};
+    const dailyLoss = {{ daily_loss|safe }};
+    const netProfit = dailyProfit.reduce((a, b) => a + b, 0) - dailyLoss.reduce((a, b) => a + b, 0);
+    document.getElementById('netProfit30Days').textContent = '₹ ' + netProfit.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+    {% elif report_type == 'weekly' %}
+    const weeklyProfit = {{ weekly_profit|safe }};
+    const weeklyLoss = {{ weekly_loss|safe }};
+    const netProfit = weeklyProfit.reduce((a, b) => a + b, 0) - weeklyLoss.reduce((a, b) => a + b, 0);
+    document.getElementById('netProfit4Weeks').textContent = '₹ ' + netProfit.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+    {% elif report_type == 'monthly' %}
+    const monthlyProfit = {{ monthly_profit|safe }};
+    const monthlyLoss = {{ monthly_loss|safe }};
+    const netProfit = monthlyProfit.reduce((a, b) => a + b, 0) - monthlyLoss.reduce((a, b) => a + b, 0);
+    document.getElementById('netProfit6Months').textContent = '₹ ' + netProfit.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+    {% endif %}
 
 // Daily Trends Chart
 {% if report_type == 'daily' or report_type == 'weekly' %}
@@ -417,35 +486,41 @@ if (dailyChartEl) {
     const dailyCtx = dailyChartEl.getContext('2d');
     new Chart(dailyCtx, {
     type: 'line',
-    data: {
-        labels: {{ daily_labels }},
-        datasets: [
-            {
-                label: 'Profit',
-                data: {{ daily_profit }},
-                borderColor: '#6b7280',
-                backgroundColor: 'rgba(107, 114, 128, 0.1)',
+            data: {
+                labels: {{ daily_labels|safe }},
+                datasets: [
+                    {
+                        label: 'Profit',
+                        data: {{ daily_profit|safe }},
+                        borderColor: colors.profit,
+                        backgroundColor: colors.background.profit,
                 tension: 0.4,
                 fill: true,
-                borderWidth: 2
+                        borderWidth: 3,
+                        pointRadius: 4,
+                        pointHoverRadius: 6
             },
-            {
-                label: 'Loss',
-                data: {{ daily_loss }},
-                borderColor: '#9ca3af',
-                backgroundColor: 'rgba(156, 163, 175, 0.1)',
+                    {
+                        label: 'Loss',
+                        data: {{ daily_loss|safe }},
+                        borderColor: colors.loss,
+                        backgroundColor: colors.background.loss,
                 tension: 0.4,
                 fill: true,
-                borderWidth: 2
+                        borderWidth: 3,
+                        pointRadius: 4,
+                        pointHoverRadius: 6
             },
-            {
-                label: 'Turnover',
-                data: {{ daily_turnover }},
-                borderColor: '#4b5563',
-                backgroundColor: 'rgba(75, 85, 99, 0.1)',
+                    {
+                        label: 'Turnover',
+                        data: {{ daily_turnover|safe }},
+                        borderColor: colors.turnover,
+                        backgroundColor: colors.background.turnover,
                 tension: 0.4,
                 fill: true,
                 borderWidth: 2,
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
                 yAxisID: 'y1'
             }
         ]
@@ -458,20 +533,15 @@ if (dailyChartEl) {
                 position: 'top',
                 labels: {
                     padding: 15,
-                    font: {
-                        size: 13
-                    }
+                            font: { size: 13, weight: '600' },
+                            usePointStyle: true
                 }
             },
             tooltip: {
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
                 padding: 12,
-                titleFont: {
-                    size: 14
-                },
-                bodyFont: {
-                    size: 13
-                },
+                        titleFont: { size: 14, weight: '600' },
+                        bodyFont: { size: 13 },
                 callbacks: {
                     label: function(context) {
                         return context.dataset.label + ': ₹' + context.parsed.y.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
@@ -482,13 +552,9 @@ if (dailyChartEl) {
         scales: {
             y: {
                 beginAtZero: true,
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.05)'
-                },
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
                 ticks: {
-                    font: {
-                        size: 12
-                    },
+                            font: { size: 12 },
                     callback: function(value) {
                         return '₹' + value.toLocaleString('en-IN');
                     }
@@ -499,32 +565,80 @@ if (dailyChartEl) {
                 display: true,
                 position: 'right',
                 beginAtZero: true,
-                grid: {
-                    drawOnChartArea: false,
-                },
+                        grid: { drawOnChartArea: false },
                 ticks: {
-                    font: {
-                        size: 12
-                    },
+                            font: { size: 12 },
                     callback: function(value) {
                         return '₹' + value.toLocaleString('en-IN');
+                            }
                     }
-                },
             },
             x: {
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.05)'
-                },
-                ticks: {
-                    font: {
-                        size: 12
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                        ticks: { font: { size: 12 } }
                     }
                 }
+            }
+        });
+    }
+
+    // Net Profit Chart (Daily)
+    {% if report_type == 'daily' %}
+    const netProfitChartEl = document.getElementById('netProfitChart');
+    if (netProfitChartEl) {
+        const netProfitCtx = netProfitChartEl.getContext('2d');
+        const dailyProfit = {{ daily_profit|safe }};
+        const dailyLoss = {{ daily_loss|safe }};
+        const netProfitData = dailyProfit.map((p, i) => p - dailyLoss[i]);
+        
+        new Chart(netProfitCtx, {
+            type: 'bar',
+            data: {
+                labels: {{ daily_labels|safe }},
+                datasets: [{
+                    label: 'Net Profit',
+                    data: netProfitData,
+                    backgroundColor: netProfitData.map(v => v >= 0 ? colors.profit : colors.loss),
+                    borderColor: netProfitData.map(v => v >= 0 ? colors.profit : colors.loss),
+                    borderWidth: 2,
+                    borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                        padding: 12,
+                        callbacks: {
+                            label: function(context) {
+                                return 'Net: ₹' + context.parsed.y.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                ticks: {
+                            font: { size: 12 },
+                            callback: function(value) {
+                                return '₹' + value.toLocaleString('en-IN');
+                    }
+                }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { font: { size: 12 } }
             }
         }
     }
     });
 }
+{% endif %}
 {% endif %}
 
 // Weekly Trends Chart
@@ -534,24 +648,24 @@ if (weeklyChartEl) {
     const weeklyCtx = weeklyChartEl.getContext('2d');
     new Chart(weeklyCtx, {
     type: 'bar',
-    data: {
-        labels: {{ weekly_labels }},
-        datasets: [
-            {
-                label: 'Profit',
-                data: {{ weekly_profit }},
-                backgroundColor: 'rgba(107, 114, 128, 0.6)',
-                borderColor: '#6b7280',
-                borderWidth: 1,
-                borderRadius: 4
+            data: {
+                labels: {{ weekly_labels|safe }},
+                datasets: [
+                    {
+                        label: 'Profit',
+                        data: {{ weekly_profit|safe }},
+                        backgroundColor: colors.profit + 'CC',
+                        borderColor: colors.profit,
+                        borderWidth: 2,
+                        borderRadius: 6
             },
-            {
-                label: 'Loss',
-                data: {{ weekly_loss }},
-                backgroundColor: 'rgba(156, 163, 175, 0.6)',
-                borderColor: '#9ca3af',
-                borderWidth: 1,
-                borderRadius: 4
+                    {
+                        label: 'Loss',
+                        data: {{ weekly_loss|safe }},
+                        backgroundColor: colors.loss + 'CC',
+                        borderColor: colors.loss,
+                        borderWidth: 2,
+                        borderRadius: 6
             }
         ]
     },
@@ -563,20 +677,13 @@ if (weeklyChartEl) {
                 position: 'top',
                 labels: {
                     padding: 15,
-                    font: {
-                        size: 13
-                    }
+                            font: { size: 13, weight: '600' },
+                            usePointStyle: true
                 }
             },
             tooltip: {
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
                 padding: 12,
-                titleFont: {
-                    size: 14
-                },
-                bodyFont: {
-                    size: 13
-                },
                 callbacks: {
                     label: function(context) {
                         return context.dataset.label + ': ₹' + context.parsed.y.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
@@ -587,32 +694,80 @@ if (weeklyChartEl) {
         scales: {
             y: {
                 beginAtZero: true,
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.05)'
-                },
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
                 ticks: {
-                    font: {
-                        size: 12
-                    },
+                            font: { size: 12 },
                     callback: function(value) {
                         return '₹' + value.toLocaleString('en-IN');
                     }
                 }
             },
             x: {
-                grid: {
-                    display: false
-                },
-                ticks: {
-                    font: {
-                        size: 12
+                        grid: { display: false },
+                        ticks: { font: { size: 12 } }
                     }
                 }
+            }
+        });
+    }
+
+    // Net Profit Weekly Chart
+    {% if report_type == 'weekly' %}
+    const netProfitWeeklyChartEl = document.getElementById('netProfitWeeklyChart');
+    if (netProfitWeeklyChartEl) {
+        const netProfitWeeklyCtx = netProfitWeeklyChartEl.getContext('2d');
+        const weeklyProfit = {{ weekly_profit|safe }};
+        const weeklyLoss = {{ weekly_loss|safe }};
+        const netProfitWeeklyData = weeklyProfit.map((p, i) => p - weeklyLoss[i]);
+        
+        new Chart(netProfitWeeklyCtx, {
+            type: 'bar',
+            data: {
+                labels: {{ weekly_labels|safe }},
+                datasets: [{
+                    label: 'Net Profit',
+                    data: netProfitWeeklyData,
+                    backgroundColor: netProfitWeeklyData.map(v => v >= 0 ? colors.profit : colors.loss),
+                    borderColor: netProfitWeeklyData.map(v => v >= 0 ? colors.profit : colors.loss),
+                    borderWidth: 2,
+                    borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                        padding: 12,
+                        callbacks: {
+                            label: function(context) {
+                                return 'Net: ₹' + context.parsed.y.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                ticks: {
+                            font: { size: 12 },
+                            callback: function(value) {
+                                return '₹' + value.toLocaleString('en-IN');
+                    }
+                }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { font: { size: 12 } }
             }
         }
     }
     });
 }
+{% endif %}
 {% endif %}
 
 // Transaction Type Breakdown Chart
@@ -620,13 +775,24 @@ if (weeklyChartEl) {
 const typeChartEl = document.getElementById('typeBreakdownChart');
 if (typeChartEl) {
     const typeCtx = typeChartEl.getContext('2d');
-    new Chart(typeCtx, {
-    type: 'doughnut',
-    data: {
-        labels: {{ type_labels }},
-        datasets: [{
-            data: {{ type_amounts }},
-            backgroundColor: {{ type_colors }},
+        const typeColors = {{ type_colors|safe }};
+        // Update colors to modern palette
+        const modernColors = typeColors.map((c, i) => {
+            const labels = {{ type_labels|safe }};
+            if (labels[i] === 'Profit') return colors.profit;
+            if (labels[i] === 'Loss') return colors.loss;
+            if (labels[i] === 'Funding') return colors.funding;
+            if (labels[i] === 'Settlement') return colors.settlement;
+            return c;
+        });
+        
+        new Chart(typeCtx, {
+            type: 'doughnut',
+            data: {
+                labels: {{ type_labels|safe }},
+                datasets: [{
+                    data: {{ type_amounts|safe }},
+                    backgroundColor: modernColors,
             borderWidth: 3,
             borderColor: '#ffffff'
         }]
@@ -639,20 +805,13 @@ if (typeChartEl) {
                 position: 'bottom',
                 labels: {
                     padding: 15,
-                    font: {
-                        size: 13
-                    }
+                            font: { size: 13, weight: '600' },
+                            usePointStyle: true
                 }
             },
             tooltip: {
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
                 padding: 12,
-                titleFont: {
-                    size: 14
-                },
-                bodyFont: {
-                    size: 13
-                },
                 callbacks: {
                     label: function(context) {
                         const label = context.label || '';
@@ -676,24 +835,24 @@ if (monthlyChartEl) {
     const monthlyCtx = monthlyChartEl.getContext('2d');
     new Chart(monthlyCtx, {
     type: 'bar',
-    data: {
-        labels: {{ monthly_labels }},
-        datasets: [
-            {
-                label: 'Profit',
-                data: {{ monthly_profit }},
-                backgroundColor: 'rgba(107, 114, 128, 0.6)',
-                borderColor: '#6b7280',
-                borderWidth: 1,
-                borderRadius: 4
+            data: {
+                labels: {{ monthly_labels|safe }},
+                datasets: [
+                    {
+                        label: 'Profit',
+                        data: {{ monthly_profit|safe }},
+                        backgroundColor: colors.profit + 'CC',
+                        borderColor: colors.profit,
+                        borderWidth: 2,
+                        borderRadius: 6
             },
-            {
-                label: 'Loss',
-                data: {{ monthly_loss }},
-                backgroundColor: 'rgba(156, 163, 175, 0.6)',
-                borderColor: '#9ca3af',
-                borderWidth: 1,
-                borderRadius: 4
+                    {
+                        label: 'Loss',
+                        data: {{ monthly_loss|safe }},
+                        backgroundColor: colors.loss + 'CC',
+                        borderColor: colors.loss,
+                        borderWidth: 2,
+                        borderRadius: 6
             }
         ]
     },
@@ -705,20 +864,13 @@ if (monthlyChartEl) {
                 position: 'top',
                 labels: {
                     padding: 15,
-                    font: {
-                        size: 13
-                    }
+                            font: { size: 13, weight: '600' },
+                            usePointStyle: true
                 }
             },
             tooltip: {
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
                 padding: 12,
-                titleFont: {
-                    size: 14
-                },
-                bodyFont: {
-                    size: 13
-                },
                 callbacks: {
                     label: function(context) {
                         return context.dataset.label + ': ₹' + context.parsed.y.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
@@ -729,27 +881,73 @@ if (monthlyChartEl) {
         scales: {
             y: {
                 beginAtZero: true,
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.05)'
-                },
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
                 ticks: {
-                    font: {
-                        size: 12
-                    },
+                            font: { size: 12 },
                     callback: function(value) {
                         return '₹' + value.toLocaleString('en-IN');
                     }
                 }
             },
             x: {
-                grid: {
-                    display: false
-                },
-                ticks: {
-                    font: {
-                        size: 12
+                        grid: { display: false },
+                        ticks: { font: { size: 12 } }
                     }
                 }
+            }
+        });
+    }
+
+    // Net Profit Monthly Chart
+    const netProfitMonthlyChartEl = document.getElementById('netProfitMonthlyChart');
+    if (netProfitMonthlyChartEl) {
+        const netProfitMonthlyCtx = netProfitMonthlyChartEl.getContext('2d');
+        const monthlyProfit = {{ monthly_profit|safe }};
+        const monthlyLoss = {{ monthly_loss|safe }};
+        const netProfitMonthlyData = monthlyProfit.map((p, i) => p - monthlyLoss[i]);
+        
+        new Chart(netProfitMonthlyCtx, {
+            type: 'bar',
+            data: {
+                labels: {{ monthly_labels|safe }},
+                datasets: [{
+                    label: 'Net Profit',
+                    data: netProfitMonthlyData,
+                    backgroundColor: netProfitMonthlyData.map(v => v >= 0 ? colors.profit : colors.loss),
+                    borderColor: netProfitMonthlyData.map(v => v >= 0 ? colors.profit : colors.loss),
+                    borderWidth: 2,
+                    borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                        padding: 12,
+                        callbacks: {
+                            label: function(context) {
+                                return 'Net: ₹' + context.parsed.y.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                ticks: {
+                            font: { size: 12 },
+                            callback: function(value) {
+                                return '₹' + value.toLocaleString('en-IN');
+                    }
+                }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { font: { size: 12 } }
             }
         }
     }
@@ -764,15 +962,15 @@ if (clientsChartEl) {
     const clientsCtx = clientsChartEl.getContext('2d');
     new Chart(clientsCtx, {
     type: 'bar',
-    data: {
-        labels: {{ client_labels }},
-        datasets: [{
-            label: 'Profit',
-            data: {{ client_profits }},
-            backgroundColor: 'rgba(107, 114, 128, 0.6)',
-            borderColor: '#6b7280',
-            borderWidth: 1,
-            borderRadius: 4
+            data: {
+                labels: {{ client_labels|safe }},
+                datasets: [{
+                    label: 'Profit',
+                    data: {{ client_profits|safe }},
+                    backgroundColor: colors.profit + 'CC',
+                    borderColor: colors.profit,
+                    borderWidth: 2,
+                    borderRadius: 6
         }]
     },
     options: {
@@ -780,18 +978,10 @@ if (clientsChartEl) {
         maintainAspectRatio: true,
         indexAxis: 'y',
         plugins: {
-            legend: {
-                display: false
-            },
+                    legend: { display: false },
             tooltip: {
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
                 padding: 12,
-                titleFont: {
-                    size: 14
-                },
-                bodyFont: {
-                    size: 13
-                },
                 callbacks: {
                     label: function(context) {
                         return '₹' + context.parsed.x.toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
@@ -802,27 +992,17 @@ if (clientsChartEl) {
         scales: {
             x: {
                 beginAtZero: true,
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.05)'
-                },
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
                 ticks: {
-                    font: {
-                        size: 12
-                    },
+                            font: { size: 12 },
                     callback: function(value) {
                         return '₹' + value.toLocaleString('en-IN');
                     }
                 }
             },
             y: {
-                grid: {
-                    display: false
-                },
-                ticks: {
-                    font: {
-                        size: 12
-                    }
-                }
+                        grid: { display: false },
+                        ticks: { font: { size: 12 } }
             }
         }
     }

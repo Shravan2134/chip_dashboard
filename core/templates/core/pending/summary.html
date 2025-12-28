@@ -1,10 +1,208 @@
 {% extends "core/base.html" %}
 
-{% block title %}Pending Payments · Broker Portal{% endblock %}
+{% block title %}Pending Payments · Transaction Hub{% endblock %}
 {% block page_title %}Pending Payments{% endblock %}
 {% block page_subtitle %}Two separate sections: Clients owe you vs You owe clients{% endblock %}
 
 {% block content %}
+<script>
+    // Define showSettlementForm function IMMEDIATELY at the top to ensure it's available
+    window.showSettlementForm = function(clientId, clientExchangeId, clientName, exchangeName, amount, paymentType, myShare, companyShare, combinedShare, isCompanyClient) {
+        console.log('=== showSettlementForm CALLED ===');
+        
+        // Ensure all parameters are valid numbers
+        amount = parseFloat(amount) || 0;
+        myShare = parseFloat(myShare) || 0;
+        companyShare = parseFloat(companyShare) || 0;
+        combinedShare = parseFloat(combinedShare) || 0;
+        
+        try {
+            // Handle optional parameters
+            paymentType = paymentType || 'client_pays';
+            isCompanyClient = isCompanyClient === true || isCompanyClient === 'true';
+            
+            // Set form action URL based on client type FIRST
+            const form = document.getElementById('settlement-form-content');
+            if (!form) {
+                console.error('CRITICAL: Settlement form not found!');
+                alert('Error: Settlement form not found. Please refresh the page.');
+                return;
+            }
+            
+            // Get URLs from data attributes
+            const companyClientsUrl = form.getAttribute('data-company-clients-url') || "{% url 'company_clients:settle_payment' %}";
+            const myClientsUrl = form.getAttribute('data-my-clients-url') || "{% url 'my_clients:settle_payment' %}";
+            
+            // Set form action based on client type
+            if (isCompanyClient) {
+                form.action = companyClientsUrl;
+            } else {
+                form.action = myClientsUrl;
+            }
+            
+            // Set form values
+            document.getElementById('settle-client-id').value = clientId;
+            document.getElementById('settle-client-exchange-id').value = clientExchangeId;
+            document.getElementById('settle-client-name').value = clientName;
+            document.getElementById('settle-exchange-name').value = exchangeName;
+            document.getElementById('settle-payment-type').value = paymentType;
+            
+            // Update section parameter
+            const sectionParam = document.getElementById('section-param');
+            if (sectionParam) {
+                if (paymentType === 'admin_pays_profit') {
+                    sectionParam.value = 'you-owe';
+                } else {
+                    sectionParam.value = 'clients-owe';
+                }
+            }
+            
+            // Set amount and update UI elements
+            const amountInput = document.getElementById('settle-amount');
+            const profitPaymentInfo = document.getElementById('profit-payment-info');
+            const pendingInfo = document.getElementById('pending-info');
+            const shareInfo = document.getElementById('share-info');
+            const pendingAmountText = document.getElementById('pending-amount-text');
+            
+            if (paymentType === 'admin_pays_profit') {
+                // Use combinedShare (which is negative, e.g., -40.0), take absolute value
+                const combinedShareValue = parseFloat(combinedShare) || 0;
+                const shareAmount = Math.abs(combinedShareValue);  // Convert -40.0 to 40.0
+                
+                if (shareAmount > 0) {
+                    amountInput.value = shareAmount.toFixed(1);
+                    amountInput.max = shareAmount.toFixed(1);
+                    amountInput.setAttribute('data-max-amount', shareAmount.toFixed(1));
+                    amountInput.setAttribute('data-combined-share', shareAmount.toFixed(1));
+                } else {
+                    // Fallback to amount parameter if combinedShare is 0
+                    const shareAmountFromAmount = Math.abs(parseFloat(amount) || 0);
+                    amountInput.value = shareAmountFromAmount.toFixed(1);
+                    amountInput.max = shareAmountFromAmount.toFixed(1);
+                    amountInput.setAttribute('data-max-amount', shareAmountFromAmount.toFixed(1));
+                    amountInput.setAttribute('data-combined-share', shareAmountFromAmount.toFixed(1));
+                }
+                
+                if (profitPaymentInfo) profitPaymentInfo.style.display = 'block';
+                if (pendingInfo) pendingInfo.style.display = 'none';
+                
+                // Show share breakdown if available
+                if (shareInfo && (myShare != 0 || companyShare != 0 || combinedShareValue != 0)) {
+                    const myShareEl = document.getElementById('settle-my-share');
+                    const companyShareEl = document.getElementById('settle-company-share');
+                    const combinedShareEl = document.getElementById('settle-combined-share');
+                    const companyShareRow = document.getElementById('settle-company-share-row');
+                    const combinedShareRow = document.getElementById('settle-combined-share-row');
+                    
+                    if (isCompanyClient && (myShare != 0 || companyShare != 0 || combinedShareValue != 0)) {
+                        if (myShareEl) myShareEl.textContent = '₹' + Math.abs(parseFloat(myShare) || 0).toFixed(1);
+                        if (companyShareEl) companyShareEl.textContent = '₹' + Math.abs(parseFloat(companyShare) || 0).toFixed(1);
+                        if (combinedShareEl) combinedShareEl.textContent = '₹' + shareAmount.toFixed(1);
+                        if (companyShareRow) companyShareRow.style.display = 'flex';
+                        if (combinedShareRow) combinedShareRow.style.display = 'flex';
+                    } else {
+                        // Hide company share row for My Clients
+                        if (companyShareRow) companyShareRow.style.display = 'none';
+                        if (combinedShareRow) combinedShareRow.style.display = 'none';
+                        // For My Clients, combined share is just my share
+                        if (combinedShareEl) combinedShareEl.textContent = '₹' + shareAmount.toFixed(1);
+                    }
+                    
+                    shareInfo.style.display = 'block';
+                }
+            } else if (paymentType === 'client_pays' && combinedShare > 0) {
+                amountInput.value = combinedShare.toFixed(1);
+                // Set max to combined share - user cannot pay more than this
+                amountInput.max = combinedShare.toFixed(1);
+                amountInput.setAttribute('data-max-amount', combinedShare.toFixed(1));
+                amountInput.setAttribute('data-combined-share', combinedShare.toFixed(1));
+                if (profitPaymentInfo) profitPaymentInfo.style.display = 'none';
+                if (pendingInfo) pendingInfo.style.display = 'block';
+                
+                // Show share breakdown if available
+                if (shareInfo && (myShare > 0 || companyShare > 0 || combinedShare > 0)) {
+                    const myShareEl = document.getElementById('settle-my-share');
+                    const companyShareEl = document.getElementById('settle-company-share');
+                    const combinedShareEl = document.getElementById('settle-combined-share');
+                    const companyShareRow = document.getElementById('settle-company-share-row');
+                    const combinedShareRow = document.getElementById('settle-combined-share-row');
+                    
+                    if (myShareEl) myShareEl.textContent = '₹ ' + parseFloat(myShare).toFixed(1);
+                    
+                    // Only show company share for company clients
+                    if (isCompanyClient && parseFloat(companyShare) > 0) {
+                        if (companyShareEl) companyShareEl.textContent = '₹ ' + parseFloat(companyShare).toFixed(1);
+                        if (companyShareRow) companyShareRow.style.display = 'flex';
+                        if (combinedShareEl) combinedShareEl.textContent = '₹ ' + parseFloat(combinedShare).toFixed(1);
+                        if (combinedShareRow) combinedShareRow.style.display = 'flex';
+                    } else {
+                        // Hide company share row for My Clients
+                        if (companyShareRow) companyShareRow.style.display = 'none';
+                        if (combinedShareRow) combinedShareRow.style.display = 'none';
+                        // For My Clients, combined share is just my share
+                        if (combinedShareEl) combinedShareEl.textContent = '₹ ' + parseFloat(myShare).toFixed(1);
+                    }
+                    
+                    shareInfo.style.display = 'block';
+                }
+            } else {
+                amountInput.value = parseFloat(amount).toFixed(1);
+                amountInput.max = '';
+                if (profitPaymentInfo) profitPaymentInfo.style.display = 'none';
+                if (pendingInfo && pendingAmountText) {
+                    pendingInfo.style.display = 'block';
+                    pendingAmountText.textContent = 'Pending Amount: ₹' + parseFloat(amount).toFixed(2);
+                }
+            }
+            
+            // Update form title and button
+            const formTitle = document.querySelector('.modal-title');
+            const submitButton = document.getElementById('settle-submit-button');
+            if (paymentType === 'admin_pays_profit') {
+                if (formTitle) formTitle.textContent = 'Pay Client (Your Loss/Expense)';
+                if (submitButton) submitButton.textContent = 'Pay Client';
+            } else {
+                if (formTitle) formTitle.textContent = 'Record Client Payment (Partial or Full)';
+                if (submitButton) submitButton.textContent = 'Record Payment';
+            }
+            
+            // Preserve client_type filter
+            let hiddenInput = document.querySelector('input[name="client_type"]');
+            let clientType = null;
+            if (hiddenInput && hiddenInput.value) {
+                clientType = hiddenInput.value;
+            } else {
+                const urlParams = new URLSearchParams(window.location.search);
+                clientType = urlParams.get('client_type') || 'all';
+                if (!hiddenInput) {
+                    hiddenInput = document.createElement('input');
+                    hiddenInput.type = 'hidden';
+                    hiddenInput.name = 'client_type';
+                    hiddenInput.id = 'settle-client-type';
+                    form.appendChild(hiddenInput);
+                }
+            }
+            if (hiddenInput) hiddenInput.value = clientType || 'all';
+            
+            // Show the modal
+            const modal = document.getElementById('settlement-form');
+            if (!modal) {
+                console.error('CRITICAL: Modal element not found!');
+                alert('Error: Payment form modal not found. Please refresh the page.');
+                return;
+            }
+            modal.style.display = 'flex';
+            console.log('Modal displayed successfully');
+        } catch (error) {
+            console.error('Error in showSettlementForm:', error);
+            console.error('Error stack:', error.stack);
+            alert('Error opening payment form: ' + error.message);
+        }
+    };
+    
+    // Verify function is defined
+    console.log('showSettlementForm defined at top:', typeof window.showSettlementForm);
+</script>
 <style>
     * {
         -webkit-transform: translateZ(0);
@@ -175,6 +373,11 @@
         border-bottom: 1px solid #f3f4f6;
         font-size: 14px;
         color: #111827;
+        position: relative;
+    }
+    
+    .data-table td:last-child {
+        pointer-events: auto;
     }
     
     .data-table th:last-child,
@@ -224,6 +427,9 @@
         white-space: nowrap;
         min-width: fit-content;
         text-align: center;
+        position: relative;
+        z-index: 100;
+        pointer-events: auto;
     }
     
     .action-button:hover {
@@ -483,7 +689,7 @@
     {% if total_pending %}
     <div class="summary-card">
         <div class="summary-amount">
-            Total Pending: ₹ {{ total_pending|floatformat:1 }}
+            Total Pending: ₹{{ total_pending|floatformat:1 }}
         </div>
         <div class="summary-note">
             Pending is a separate ledger - only affected by losses and client payments
@@ -530,11 +736,11 @@
                         </a>
                     </td>
                     <td>{{ item.exchange_name }}</td>
-                    <td>₹ {{ item.old_balance|floatformat:1 }}</td>
-                    <td>₹ {{ item.exchange_balance|floatformat:1 }}</td>
-                    <td>₹ {{ item.total_loss|default:0|floatformat:1 }}</td>
+                    <td>₹{{ item.old_balance|floatformat:1 }}</td>
+                    <td>₹{{ item.exchange_balance|floatformat:1 }}</td>
+                    <td>₹{{ item.total_loss|default:0|floatformat:1 }}</td>
                     <td class="share-cell my-share-amount-cell" data-my-share="{{ item.my_share|default:0 }}" data-company-share="{{ item.company_share|default:0 }}" data-combined-share="{{ item.combined_share|default:0 }}">
-                        <span class="amount-value">₹ {{ item.my_share|default:0|floatformat:1 }}</span>
+                        <span class="amount-value">₹{{ item.my_share|default:0|floatformat:1 }}</span>
                         {% if item.my_share_pct is not None and item.my_share_pct > 0 %}
                             <span style="font-size: 12px; color: #6b7280; margin-left: 6px; font-weight: 400;">({{ item.my_share_pct|floatformat:1 }}%)</span>
                         {% endif %}
@@ -548,7 +754,7 @@
                     </td>
                     {% if client_type_filter == 'company' or client_type_filter == 'all' %}
                     <td class="share-cell company-share-amount-cell company-only" data-my-share="{{ item.my_share|default:0 }}" data-company-share="{{ item.company_share|default:0 }}" data-combined-share="{{ item.combined_share|default:0 }}">
-                        <span class="amount-value">₹ {{ item.company_share|default:0|floatformat:1 }}</span>
+                        <span class="amount-value">₹{{ item.company_share|default:0|floatformat:1 }}</span>
                         {% if item.is_company_client and item.company_share_pct is not None and item.company_share_pct > 0 %}
                             <span style="font-size: 12px; color: #6b7280; margin-left: 6px; font-weight: 400;">({{ item.company_share_pct|floatformat:1 }}%)</span>
                         {% endif %}
@@ -566,8 +772,8 @@
                     </td>
                     {% endif %}
                     <td class="share-cell combined-share-cell" data-my-share="{{ item.my_share|default:0 }}" data-company-share="{{ item.company_share|default:0 }}" data-combined-share="{{ item.combined_share|default:0 }}" data-company-share-pct="{{ item.company_share_pct|default:0 }}" data-is-company-client="{{ item.is_company_client|yesno:'true,false' }}" style="display: none;">
-                        {% if item.combined_share and item.combined_share > 0 %}
-                            <span class="amount-value">₹ {{ item.combined_share|floatformat:1 }}</span>
+                        {% if item.combined_share is not None and item.combined_share != 0 %}
+                            <span class="amount-value">₹{{ item.combined_share|floatformat:1 }}</span>
                         {% else %}
                             <span style="color: #9ca3af;">—</span>
                         {% endif %}
@@ -581,8 +787,8 @@
                             <span style="color: #9ca3af;">—</span>
                         {% endif %}
                     </td>
-                    <td>
-                        <button onclick="console.log('Button clicked!'); showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name|escapejs }}', '{{ item.exchange_name|escapejs }}', {{ item.pending_amount }}, 'client_pays', {{ item.my_share|default:0 }}, {{ item.company_share|default:0 }}, {{ item.combined_share|default:0 }}, {{ item.is_company_client|yesno:"true,false" }})" class="action-button">
+                    <td style="position: relative; z-index: 10;">
+                        <button onclick="event.stopPropagation(); event.preventDefault(); console.log('Button clicked!'); try { if (typeof window.showSettlementForm === 'function') { window.showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name|escapejs }}', '{{ item.exchange_name|escapejs }}', {{ item.pending_amount|default:0 }}, 'client_pays', {{ item.my_share|default:0 }}, {{ item.company_share|default:0 }}, {{ item.combined_share|default:0 }}, {{ item.is_company_client|yesno:"true,false" }}); } else { console.error('showSettlementForm is not defined!'); alert('Error: Payment form function not loaded. Please refresh the page.'); } } catch(e) { console.error('Error calling showSettlementForm:', e); alert('Error: ' + e.message); }" class="action-button" style="position: relative; z-index: 100; pointer-events: auto; cursor: pointer;">
                             Record Payment
                         </button>
                     </td>
@@ -617,7 +823,7 @@
     {% if total_profit %}
     <div class="summary-card">
         <div class="summary-amount">
-            Total Amount to Pay: ₹ {{ total_profit|floatformat:1 }}
+            Total Amount to Pay: ₹{{ total_profit|floatformat:1 }}
         </div>
         <div class="summary-note">
             This is your loss/expense - amount you need to pay to clients. Payment does NOT affect pending amount (separate ledger)
@@ -634,9 +840,9 @@
                 <th>Client Code</th>
                 <th>Client Name</th>
                 <th>Exchange</th>
-                <th>Total Funding</th>
-                <th>Exchange Balance</th>
-                <th>Total Profit</th>
+                <th style="text-align: right;">Total Funding</th>
+                <th style="text-align: right;">Exchange Balance</th>
+                <th style="text-align: right;">Total Profit</th>
                 <th class="share-header my-share-header">My Amount</th>
                 <th class="share-header my-share-header">My %</th>
                 {% if client_type_filter == 'company' or client_type_filter == 'all' %}
@@ -664,11 +870,11 @@
                         </a>
                     </td>
                     <td>{{ item.exchange_name }}</td>
-                    <td>₹ {{ item.total_funding|floatformat:1 }}</td>
-                    <td>₹ {{ item.exchange_balance|floatformat:1 }}</td>
-                    <td>₹ {{ item.total_profit|default:0|floatformat:1 }}</td>
+                    <td style="text-align: right;">₹{{ item.total_funding|floatformat:1 }}</td>
+                    <td style="text-align: right;">₹{{ item.exchange_balance|floatformat:1 }}</td>
+                    <td style="text-align: right;">₹{{ item.total_profit|default:0|floatformat:1 }}</td>
                     <td class="share-cell my-share-amount-cell" data-my-share="{{ item.my_share|default:0 }}" data-company-share="{{ item.company_share|default:0 }}" data-combined-share="{{ item.combined_share|default:0 }}">
-                        <span class="amount-value">₹ {{ item.my_share|default:0|floatformat:1 }}</span>
+                        <span class="amount-value">₹{{ item.my_share|default:0|floatformat:1 }}</span>
                         {% if item.my_share_pct is not None and item.my_share_pct > 0 %}
                             <span style="font-size: 12px; color: #6b7280; margin-left: 6px; font-weight: 400;">({{ item.my_share_pct|floatformat:1 }}%)</span>
                         {% endif %}
@@ -682,7 +888,7 @@
                     </td>
                     {% if client_type_filter == 'company' or client_type_filter == 'all' %}
                     <td class="share-cell company-share-amount-cell company-only" data-my-share="{{ item.my_share|default:0 }}" data-company-share="{{ item.company_share|default:0 }}" data-combined-share="{{ item.combined_share|default:0 }}">
-                        <span class="amount-value">₹ {{ item.company_share|default:0|floatformat:1 }}</span>
+                        <span class="amount-value">₹{{ item.company_share|default:0|floatformat:1 }}</span>
                         {% if item.is_company_client and item.company_share_pct is not None and item.company_share_pct > 0 %}
                             <span style="font-size: 12px; color: #6b7280; margin-left: 6px; font-weight: 400;">({{ item.company_share_pct|floatformat:1 }}%)</span>
                         {% endif %}
@@ -700,8 +906,8 @@
                     </td>
                     {% endif %}
                     <td class="share-cell combined-share-cell" data-my-share="{{ item.my_share|default:0 }}" data-company-share="{{ item.company_share|default:0 }}" data-combined-share="{{ item.combined_share|default:0 }}" data-company-share-pct="{{ item.company_share_pct|default:0 }}" data-is-company-client="{{ item.is_company_client|yesno:'true,false' }}" style="display: none;">
-                        {% if item.combined_share and item.combined_share > 0 %}
-                            <span class="amount-value">₹ {{ item.combined_share|floatformat:1 }}</span>
+                        {% if item.combined_share is not None and item.combined_share != 0 %}
+                            <span class="amount-value">₹{{ item.combined_share|floatformat:1 }}</span>
                         {% else %}
                             <span style="color: #9ca3af;">—</span>
                         {% endif %}
@@ -715,8 +921,8 @@
                             <span style="color: #9ca3af;">—</span>
                         {% endif %}
                     </td>
-                    <td>
-                        <button onclick="showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name|escapejs }}', '{{ item.exchange_name|escapejs }}', {{ item.client_profit }}, 'admin_pays_profit', 0, 0, 0, {{ item.is_company_client|yesno:"true,false" }})" class="action-button">
+                    <td style="position: relative; z-index: 10;">
+                        <button onclick="event.stopPropagation(); event.preventDefault(); try { if (typeof window.showSettlementForm === 'function') { window.showSettlementForm({{ item.client_id }}, {{ item.client_exchange_id }}, '{{ item.client_name|escapejs }}', '{{ item.exchange_name|escapejs }}', {{ item.client_profit|default:0 }}, 'admin_pays_profit', {{ item.my_share|default:0 }}, {{ item.company_share|default:0 }}, {{ item.combined_share|default:0 }}, {{ item.is_company_client|yesno:"true,false" }}); } else { console.error('showSettlementForm is not defined!'); alert('Error: Payment form function not loaded. Please refresh the page.'); } } catch(e) { console.error('Error calling showSettlementForm:', e); alert('Error: ' + e.message); }" class="action-button" style="position: relative; z-index: 100; pointer-events: auto; cursor: pointer;">
                             Pay Client
                         </button>
                     </td>
@@ -759,7 +965,8 @@
             
             <div class="form-group">
                 <label class="form-label">Amount to Pay (₹) *</label>
-                <input type="number" name="amount" id="settle-amount" class="form-input" step="0.1" min="0" max="0" required placeholder="0.0" data-combined-share="0" data-max-amount="0">
+                <input type="number" name="amount" id="settle-amount" class="form-input" step="0.1" min="0" max="0" required placeholder="0.0" data-combined-share="0" data-max-amount="0" oninput="validateAmount(this)">
+                <div id="amount-error" style="display: none; color: #dc3545; font-size: 12px; margin-top: 4px;"></div>
                 <div id="share-info" class="form-help" style="display: none; margin-top: 8px; padding: 12px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
                         <span style="font-size: 13px; color: #6b7280;">My Share:</span>
@@ -806,11 +1013,27 @@
 </div>
 
 <script>
-    // Make function globally accessible
+    // Remove duplicate - function already defined at top of page
+    // This is a placeholder to prevent errors
+    if (!window.showSettlementForm) {
+        console.error('CRITICAL: showSettlementForm was not defined at top of page!');
+    } else {
+        console.log('showSettlementForm already defined, skipping duplicate definition');
+    }
+    
+    // Keep the rest of the script but don't redefine the function
+    /*
     window.showSettlementForm = function(clientId, clientExchangeId, clientName, exchangeName, amount, paymentType, myShare, companyShare, combinedShare, isCompanyClient) {
         console.log('=== showSettlementForm CALLED ===');
         console.log('Arguments:', arguments);
         console.log('All arguments:', {clientId, clientExchangeId, clientName, exchangeName, amount, paymentType, myShare, companyShare, combinedShare, isCompanyClient});
+        
+        // Ensure all parameters are valid numbers
+        amount = parseFloat(amount) || 0;
+        myShare = parseFloat(myShare) || 0;
+        companyShare = parseFloat(companyShare) || 0;
+        combinedShare = parseFloat(combinedShare) || 0;
+        
         try {
             console.log('showSettlementForm called with:', {
                 clientId, clientExchangeId, clientName, exchangeName, amount, paymentType, myShare, companyShare, combinedShare, isCompanyClient
@@ -906,13 +1129,24 @@
             
             // For admin_pays_profit: You pay ONLY your share amount, NOT the full profit
             if (paymentType === 'admin_pays_profit') {
-                // amount parameter might be negative for MY CLIENTS (e.g., -5.0)
-                // Take absolute value to normalize it
-                const shareAmount = Math.abs(parseFloat(amount) || 0);
-                amountInput.value = shareAmount.toFixed(1);
-                amountInput.max = shareAmount.toFixed(1);  // Max is the share amount only
-                amountInput.setAttribute('data-max-amount', shareAmount.toFixed(1));
-                amountInput.setAttribute('data-combined-share', '0');
+                // Use combinedShare (which is the absolute value of what you owe)
+                // combinedShare is negative (e.g., -40.0), so take absolute value
+                const combinedShareValue = parseFloat(combinedShare) || 0;
+                const shareAmount = Math.abs(combinedShareValue);  // Convert -40.0 to 40.0
+                
+                if (shareAmount > 0) {
+                    amountInput.value = shareAmount.toFixed(1);
+                    amountInput.max = shareAmount.toFixed(1);  // Max is the share amount only
+                    amountInput.setAttribute('data-max-amount', shareAmount.toFixed(1));
+                    amountInput.setAttribute('data-combined-share', shareAmount.toFixed(1));
+                } else {
+                    // Fallback to amount parameter if combinedShare is 0
+                    const shareAmountFromAmount = Math.abs(parseFloat(amount) || 0);
+                    amountInput.value = shareAmountFromAmount.toFixed(1);
+                    amountInput.max = shareAmountFromAmount.toFixed(1);
+                    amountInput.setAttribute('data-max-amount', shareAmountFromAmount.toFixed(1));
+                    amountInput.setAttribute('data-combined-share', shareAmountFromAmount.toFixed(1));
+                }
                 
                 // Show warning that you only pay share amount
                 if (profitPaymentInfo) {
@@ -921,12 +1155,34 @@
                 if (pendingInfo) {
                     pendingInfo.style.display = 'none';
                 }
+                
+                // Show share breakdown if available
+                if (shareInfo && (myShare > 0 || companyShare > 0 || combinedShareValue != 0)) {
+                    const myShareEl = document.getElementById('settle-my-share');
+                    const companyShareEl = document.getElementById('settle-company-share');
+                    const combinedShareEl = document.getElementById('settle-combined-share');
+                    const combinedShareRow = document.getElementById('settle-combined-share-row');
+                    
+                    if (isCompanyClient && (myShare > 0 || companyShare > 0 || combinedShareValue != 0)) {
+                        if (myShareEl) myShareEl.textContent = '₹' + Math.abs(parseFloat(myShare) || 0).toFixed(1);
+                        if (companyShareEl) companyShareEl.textContent = '₹' + Math.abs(parseFloat(companyShare) || 0).toFixed(1);
+                        if (combinedShareEl) combinedShareEl.textContent = '₹' + shareAmount.toFixed(1);
+                        if (combinedShareRow) combinedShareRow.style.display = 'flex';
+                        if (shareInfo) shareInfo.style.display = 'block';
+                    } else {
+                        if (combinedShareRow) combinedShareRow.style.display = 'none';
+                        // For My Clients, combined share is just my share
+                        if (combinedShareEl) combinedShareEl.textContent = '₹' + shareAmount.toFixed(1);
+                        if (shareInfo) shareInfo.style.display = 'block';
+                    }
+                }
             } else if (paymentType === 'client_pays' && combinedShareValue > 0) {
                 // For client_pays, set amount to combined share (not pending amount)
                 amountInput.value = combinedShareValue.toFixed(1);
-                amountInput.max = '';  // No max limit for client payments
+                // Set max to combined share - user cannot pay more than this
+                amountInput.max = combinedShareValue.toFixed(1);
                 amountInput.setAttribute('data-combined-share', combinedShareValue.toFixed(1));
-                amountInput.setAttribute('data-max-amount', '0');
+                amountInput.setAttribute('data-max-amount', combinedShareValue.toFixed(1));
                 
                 if (profitPaymentInfo) {
                     profitPaymentInfo.style.display = 'none';
@@ -1078,10 +1334,44 @@
             console.error('Error stack:', error.stack);
             alert('Error opening payment form: ' + error.message);
         }
-    }
+    };
+    */
     
     function hideSettlementForm() {
         document.getElementById('settlement-form').style.display = 'none';
+    }
+    
+    // Real-time validation for amount input
+    function validateAmount(input) {
+        const amount = parseFloat(input.value) || 0;
+        const combinedShareMax = parseFloat(input.getAttribute('data-combined-share')) || 0;
+        const maxAmountAttr = parseFloat(input.getAttribute('data-max-amount')) || 0;
+        const maxAmount = parseFloat(input.max) || 0;
+        const errorDiv = document.getElementById('amount-error');
+        
+        // Determine the actual maximum allowed amount
+        let actualMax = 0;
+        if (combinedShareMax > 0) {
+            actualMax = combinedShareMax;
+        } else if (maxAmountAttr > 0) {
+            actualMax = maxAmountAttr;
+        } else if (maxAmount > 0) {
+            actualMax = maxAmount;
+        }
+        
+        // Show error if amount exceeds maximum
+        if (actualMax > 0 && amount > actualMax) {
+            if (errorDiv) {
+                errorDiv.textContent = `Maximum amount is ₹${actualMax.toFixed(2)}. You can pay less than or equal to this amount.`;
+                errorDiv.style.display = 'block';
+            }
+            input.setCustomValidity(`Amount cannot exceed ₹${actualMax.toFixed(2)}`);
+        } else {
+            if (errorDiv) {
+                errorDiv.style.display = 'none';
+            }
+            input.setCustomValidity('');
+        }
     }
     
     function handleFormSubmit(event) {
@@ -1123,16 +1413,28 @@
         
         // For client_pays, validate that amount doesn't exceed the max (combined share)
         if (paymentType === 'client_pays') {
+            // Check if amount exceeds combined share or max amount
             const combinedShareMax = parseFloat(amountInput.getAttribute('data-combined-share')) || 0;
-            const maxAmount = parseFloat(amountInput.max);
+            const maxAmountAttr = parseFloat(amountInput.getAttribute('data-max-amount')) || 0;
+            const maxAmount = parseFloat(amountInput.max) || 0;
             
-            // If combined share is set and > 0, user can only pay up to combined share
-            if (combinedShareMax > 0 && amount > combinedShareMax) {
-                alert(`You can only pay up to ₹${combinedShareMax.toFixed(2)} (Combined Share: My Share + Company Share). This is the only amount payable.`);
-                event.preventDefault();
-                return false;
-            } else if (maxAmount > 0 && amount > maxAmount) {
-                alert(`Amount cannot exceed ₹${maxAmount.toFixed(2)}`);
+            // Determine the actual maximum allowed amount
+            let actualMax = 0;
+            if (combinedShareMax > 0) {
+                actualMax = combinedShareMax;
+            } else if (maxAmountAttr > 0) {
+                actualMax = maxAmountAttr;
+            } else if (maxAmount > 0) {
+                actualMax = maxAmount;
+            }
+            
+            // Validate amount doesn't exceed maximum
+            if (actualMax > 0 && amount > actualMax) {
+                if (combinedShareMax > 0) {
+                    alert(`Amount cannot exceed ₹${actualMax.toFixed(2)} (Combined Share: My Share + Company Share). You can pay less than or equal to this amount.`);
+                } else {
+                    alert(`Amount cannot exceed ₹${actualMax.toFixed(2)}. You can pay less than or equal to this amount.`);
+                }
                 event.preventDefault();
                 return false;
             }
@@ -1300,6 +1602,16 @@
 </script>
 
 <script>
+    // Verify function is still available after page load
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('DOMContentLoaded - showSettlementForm available:', typeof window.showSettlementForm);
+        if (typeof window.showSettlementForm !== 'function') {
+            console.error('CRITICAL: showSettlementForm is missing after DOM load!');
+        } else {
+            console.log('✅ showSettlementForm is available after DOM load');
+        }
+    });
+    
     function showSection(sectionId) {
         // Prevent any zoom effects
         const container = document.querySelector('.pending-container');
@@ -1497,9 +1809,21 @@
                     // Show combined share column with amount only
                     if (combinedShareCells[index]) {
                         combinedShareCells[index].style.display = '';
-                        const combinedShare = parseFloat(combinedShareCells[index].dataset.combinedShare || 0);
-                        if (combinedShare > 0) {
-                        combinedShareCells[index].innerHTML = `<span class="amount-value">₹ ${combinedShare.toFixed(1)}</span>`;
+                        // For company clients: combined_share = my_share + company_share
+                        // For my clients: combined_share = my_share
+                        const myShare = parseFloat(combinedShareCells[index].dataset.myShare || 0);
+                        const companyShare = parseFloat(combinedShareCells[index].dataset.companyShare || 0);
+                        const isCompanyClient = combinedShareCells[index].dataset.isCompanyClient === 'true';
+                        
+                        // Calculate combined share: for company clients, add my_share + company_share
+                        let combinedShare = parseFloat(combinedShareCells[index].dataset.combinedShare || 0);
+                        if (isCompanyClient && (myShare != 0 || companyShare != 0)) {
+                            // Recalculate to ensure accuracy: my_share + company_share
+                            combinedShare = myShare + companyShare;
+                        }
+                        
+                        if (combinedShare != 0) {
+                            combinedShareCells[index].innerHTML = `<span class="amount-value">₹${combinedShare.toFixed(1)}</span>`;
                         } else {
                             combinedShareCells[index].innerHTML = `<span style="color: #9ca3af;">—</span>`;
                         }
@@ -1524,7 +1848,7 @@
                 } else {
                     // Show separate columns, hide combined
                     cell.style.display = '';
-                    cell.innerHTML = `<span class="amount-value">₹ ${myShare.toFixed(1)}</span>`;
+                    cell.innerHTML = `<span class="amount-value">₹${myShare.toFixed(1)}</span>`;
                     
                     // Show My % cell
                     const mySharePctCell = cell.parentElement.querySelector('.my-share-pct-cell');
@@ -1533,7 +1857,7 @@
                     // Show Company Amount and Company % cells (for company clients)
                     if (companyShareAmountCells[index]) {
                         companyShareAmountCells[index].style.display = '';
-                        companyShareAmountCells[index].innerHTML = `<span class="amount-value">₹ ${companyShare.toFixed(1)}</span>`;
+                        companyShareAmountCells[index].innerHTML = `<span class="amount-value">₹${companyShare.toFixed(1)}</span>`;
                     }
                     const companySharePctCell = cell.parentElement.querySelector('.company-share-pct-cell');
                     if (companySharePctCell) companySharePctCell.style.display = '';
@@ -1550,11 +1874,15 @@
         });
     };
     
-    // Test function availability
-    console.log('showSettlementForm function defined:', typeof window.showSettlementForm);
-    if (typeof window.showSettlementForm !== 'function') {
-        console.error('CRITICAL: showSettlementForm is not a function!');
-    }
+    // Test function availability immediately after definition
+    (function() {
+        console.log('showSettlementForm function defined:', typeof window.showSettlementForm);
+        if (typeof window.showSettlementForm !== 'function') {
+            console.error('CRITICAL: showSettlementForm is not a function!');
+        } else {
+            console.log('✅ showSettlementForm is available globally');
+        }
+    })();
 </script>
 </div>
 {% endblock %}
