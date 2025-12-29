@@ -10,7 +10,8 @@ from django.utils import timezone
 from .models import (
     Client, Exchange, ClientExchange, Transaction,
     CompanyShareRecord, SystemSettings, ClientDailyBalance,
-    PendingAmount, DailyBalanceSnapshot
+    PendingAmount, DailyBalanceSnapshot, OutstandingAmount,
+    TallyLedger
 )
 
 
@@ -1147,3 +1148,1235 @@ class EdgeCaseTest(TestCase):
         self.assertEqual(result['total_funding'], Decimal('0'))
         self.assertEqual(result['exchange_balance'], Decimal('0'))
         self.assertEqual(result['client_profit_loss'], Decimal('0'))
+
+
+# ============================================================================
+# ADDITIONAL MODEL TESTS
+# ============================================================================
+
+class OutstandingAmountModelTest(TestCase):
+    """Test OutstandingAmount model functionality."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.client = Client.objects.create(
+            user=self.user,
+            name="My Client",
+            is_company_client=False  # My client
+        )
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_outstanding_amount_creation(self):
+        """Test creating an outstanding amount."""
+        outstanding = OutstandingAmount.objects.create(
+            client_exchange=self.client_exchange,
+            outstanding_amount=Decimal('1000.00')
+        )
+        self.assertEqual(outstanding.outstanding_amount, Decimal('1000.00'))
+        self.assertEqual(outstanding.client_exchange, self.client_exchange)
+
+    def test_outstanding_amount_one_to_one(self):
+        """Test that outstanding amount is one-to-one with client_exchange."""
+        OutstandingAmount.objects.create(
+            client_exchange=self.client_exchange,
+            outstanding_amount=Decimal('1000.00')
+        )
+        # Should fail to create another
+        with self.assertRaises(Exception):
+            OutstandingAmount.objects.create(
+                client_exchange=self.client_exchange,
+                outstanding_amount=Decimal('2000.00')
+            )
+
+    def test_outstanding_amount_str(self):
+        """Test OutstandingAmount __str__ method."""
+        outstanding = OutstandingAmount.objects.create(
+            client_exchange=self.client_exchange,
+            outstanding_amount=Decimal('1500.00')
+        )
+        expected = f"{self.client_exchange} - Outstanding: ₹1500.00"
+        self.assertEqual(str(outstanding), expected)
+
+
+class TallyLedgerModelTest(TestCase):
+    """Test TallyLedger model functionality."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.client = Client.objects.create(
+            user=self.user,
+            name="Company Client",
+            is_company_client=True  # Company client
+        )
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_tally_ledger_creation(self):
+        """Test creating a tally ledger."""
+        tally = TallyLedger.objects.create(
+            client_exchange=self.client_exchange,
+            client_owes_you=Decimal('1000.00'),
+            company_owes_you=Decimal('500.00'),
+            you_owe_client=Decimal('200.00'),
+            you_owe_company=Decimal('100.00')
+        )
+        self.assertEqual(tally.client_owes_you, Decimal('1000.00'))
+        self.assertEqual(tally.company_owes_you, Decimal('500.00'))
+        self.assertEqual(tally.you_owe_client, Decimal('200.00'))
+        self.assertEqual(tally.you_owe_company, Decimal('100.00'))
+
+    def test_tally_ledger_one_to_one(self):
+        """Test that tally ledger is one-to-one with client_exchange."""
+        TallyLedger.objects.create(
+            client_exchange=self.client_exchange,
+            client_owes_you=Decimal('1000.00')
+        )
+        # Should fail to create another
+        with self.assertRaises(Exception):
+            TallyLedger.objects.create(
+                client_exchange=self.client_exchange,
+                client_owes_you=Decimal('2000.00')
+            )
+
+    def test_tally_ledger_net_properties(self):
+        """Test tally ledger net payable properties."""
+        tally = TallyLedger.objects.create(
+            client_exchange=self.client_exchange,
+            client_owes_you=Decimal('1000.00'),
+            you_owe_client=Decimal('200.00'),
+            company_owes_you=Decimal('500.00'),
+            you_owe_company=Decimal('100.00')
+        )
+        # Net client payable = you_owe_client - client_owes_you = 200 - 1000 = -800
+        self.assertEqual(tally.net_client_payable, Decimal('-800.00'))
+        # Net company payable = you_owe_company - company_owes_you = 100 - 500 = -400
+        self.assertEqual(tally.net_company_payable, Decimal('-400.00'))
+
+    def test_tally_ledger_str(self):
+        """Test TallyLedger __str__ method."""
+        tally = TallyLedger.objects.create(
+            client_exchange=self.client_exchange,
+            client_owes_you=Decimal('1000.00'),
+            you_owe_client=Decimal('200.00')
+        )
+        # Should contain client and company net payables
+        str_repr = str(tally)
+        self.assertIn("Client:", str_repr)
+        self.assertIn("Company:", str_repr)
+
+
+class DailyBalanceSnapshotModelTest(TestCase):
+    """Test DailyBalanceSnapshot model functionality."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_daily_balance_snapshot_creation(self):
+        """Test creating a daily balance snapshot."""
+        snapshot = DailyBalanceSnapshot.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            total_funding=Decimal('10000.00'),
+            total_profit=Decimal('2000.00'),
+            total_loss=Decimal('500.00'),
+            client_net_balance=Decimal('11500.00'),
+            you_net_balance=Decimal('450.00'),
+            company_net_profit=Decimal('180.00'),
+            pending_client_owes_you=Decimal('150.00'),
+            pending_you_owe_client=Decimal('0.00')
+        )
+        self.assertEqual(snapshot.total_funding, Decimal('10000.00'))
+        self.assertEqual(snapshot.total_profit, Decimal('2000.00'))
+        self.assertEqual(snapshot.client_net_balance, Decimal('11500.00'))
+
+    def test_daily_balance_snapshot_unique_together(self):
+        """Test that client_exchange-date combination must be unique."""
+        DailyBalanceSnapshot.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            total_funding=Decimal('10000.00')
+        )
+        with self.assertRaises(Exception):
+            DailyBalanceSnapshot.objects.create(
+                client_exchange=self.client_exchange,
+                date=date.today(),
+                total_funding=Decimal('20000.00')
+            )
+
+    def test_daily_balance_snapshot_properties(self):
+        """Test snapshot backward compatibility properties."""
+        snapshot = DailyBalanceSnapshot.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            total_funding=Decimal('10000.00')
+        )
+        self.assertEqual(snapshot.client, self.client)
+        self.assertEqual(snapshot.exchange, self.exchange)
+
+    def test_daily_balance_snapshot_str(self):
+        """Test DailyBalanceSnapshot __str__ method."""
+        snapshot = DailyBalanceSnapshot.objects.create(
+            client_exchange=self.client_exchange,
+            date=date(2024, 1, 15),
+            total_funding=Decimal('10000.00')
+        )
+        str_repr = str(snapshot)
+        self.assertIn("2024-01-15", str_repr)
+        self.assertIn(self.exchange.name, str_repr)
+
+
+class CompanyShareRecordModelTest(TestCase):
+    """Test CompanyShareRecord model functionality."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+        self.transaction = Transaction.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            transaction_type=Transaction.TYPE_PROFIT,
+            amount=Decimal('1000.00')
+        )
+
+    def test_company_share_record_creation(self):
+        """Test creating a company share record."""
+        record = CompanyShareRecord.objects.create(
+            client_exchange=self.client_exchange,
+            transaction=self.transaction,
+            date=date.today(),
+            company_amount=Decimal('63.00')
+        )
+        self.assertEqual(record.company_amount, Decimal('63.00'))
+        self.assertEqual(record.transaction, self.transaction)
+        self.assertEqual(record.client_exchange, self.client_exchange)
+
+    def test_company_share_record_str(self):
+        """Test CompanyShareRecord __str__ method."""
+        record = CompanyShareRecord.objects.create(
+            client_exchange=self.client_exchange,
+            transaction=self.transaction,
+            date=date.today(),
+            company_amount=Decimal('63.00')
+        )
+        str_repr = str(record)
+        self.assertIn("company share", str_repr.lower())
+        self.assertIn("63.00", str_repr)
+
+
+# ============================================================================
+# ADDITIONAL BUSINESS LOGIC TESTS
+# ============================================================================
+
+class AdvancedBusinessLogicTest(TestCase):
+    """Test advanced business logic functions."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.my_client = Client.objects.create(
+            user=self.user,
+            name="My Client",
+            is_company_client=False
+        )
+        self.company_client = Client.objects.create(
+            user=self.user,
+            name="Company Client",
+            is_company_client=True
+        )
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.my_client_exchange = ClientExchange.objects.create(
+            client=self.my_client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('10.00'),
+            company_share_pct=Decimal('9.00')
+        )
+        self.company_client_exchange = ClientExchange.objects.create(
+            client=self.company_client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('10.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_get_old_balance_after_settlement_no_settlement(self):
+        """Test get_old_balance_after_settlement when no settlement exists."""
+        # Create funding
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        from core.views import get_old_balance_after_settlement
+        old_balance = get_old_balance_after_settlement(self.my_client_exchange)
+        self.assertEqual(old_balance, Decimal('10000.00'))
+
+    def test_get_old_balance_after_settlement_with_settlement(self):
+        """Test get_old_balance_after_settlement when settlement exists."""
+        # Create funding
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # Create settlement where client pays
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 5),
+            transaction_type=Transaction.TYPE_SETTLEMENT,
+            amount=Decimal('3.00'),
+            your_share_amount=Decimal('3.00'),  # Client pays you
+            client_share_amount=Decimal('0')
+        )
+        from core.views import get_old_balance_after_settlement
+        old_balance = get_old_balance_after_settlement(self.my_client_exchange)
+        # Old balance should be reduced by loss portion
+        # Loss settled = 3 / 10% = 30
+        # Old balance = 10000 - 30 = 9970
+        self.assertEqual(old_balance, Decimal('9970.0'))
+
+    def test_get_old_balance_with_previous_balance_record(self):
+        """Test get_old_balance when previous balance record exists."""
+        # Create funding
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # Create previous balance record
+        ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 5),
+            remaining_balance=Decimal('10000.00')
+        )
+        # Create new balance record
+        new_balance = ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 10),
+            remaining_balance=Decimal('12000.00')
+        )
+        from core.views import get_old_balance
+        old_balance = get_old_balance(
+            self.my_client_exchange,
+            balance_record_date=new_balance.date,
+            balance_record_created_at=new_balance.created_at
+        )
+        # Should return previous balance record
+        self.assertEqual(old_balance, Decimal('10000.00'))
+
+    def test_get_old_balance_without_previous_balance_record(self):
+        """Test get_old_balance when no previous balance record exists."""
+        # Create funding
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # Create balance record (first one)
+        balance = ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 10),
+            remaining_balance=Decimal('12000.00')
+        )
+        from core.views import get_old_balance
+        old_balance = get_old_balance(
+            self.my_client_exchange,
+            balance_record_date=balance.date,
+            balance_record_created_at=balance.created_at
+        )
+        # Should return funding before the date
+        self.assertEqual(old_balance, Decimal('10000.00'))
+
+    def test_update_outstanding_from_balance_change_loss(self):
+        """Test updating outstanding for my client on loss."""
+        from core.views import update_outstanding_from_balance_change
+        old_balance = Decimal('10000.00')
+        current_balance = Decimal('9000.00')  # Loss of 1000
+        result = update_outstanding_from_balance_change(
+            self.my_client_exchange,
+            old_balance,
+            current_balance
+        )
+        # Difference = -1000, My share = 10% of 1000 = 100
+        # Outstanding should increase by 100
+        self.assertEqual(result['difference'], Decimal('-1000.00'))
+        self.assertEqual(result['your_share'], Decimal('100.00'))
+        self.assertEqual(result['outstanding_after'], Decimal('100.00'))
+
+    def test_update_outstanding_from_balance_change_profit(self):
+        """Test updating outstanding for my client on profit."""
+        from core.views import update_outstanding_from_balance_change
+        old_balance = Decimal('10000.00')
+        current_balance = Decimal('11000.00')  # Profit of 1000
+        result = update_outstanding_from_balance_change(
+            self.my_client_exchange,
+            old_balance,
+            current_balance
+        )
+        # Difference = 1000, My share = 10% of 1000 = 100
+        # Outstanding should decrease by 100 (you owe client)
+        self.assertEqual(result['difference'], Decimal('1000.00'))
+        self.assertEqual(result['your_share'], Decimal('-100.00'))
+        self.assertLess(result['outstanding_after'], Decimal('0'))
+
+    def test_update_outstanding_company_client(self):
+        """Test that outstanding is not updated for company clients."""
+        from core.views import update_outstanding_from_balance_change
+        result = update_outstanding_from_balance_change(
+            self.company_client_exchange,
+            Decimal('10000.00'),
+            Decimal('9000.00')
+        )
+        # Should return zeros for company clients
+        self.assertEqual(result['your_share'], Decimal('0'))
+        self.assertEqual(result['outstanding_before'], Decimal('0'))
+        self.assertEqual(result['outstanding_after'], Decimal('0'))
+
+    def test_update_tally_from_balance_change_loss(self):
+        """Test updating tally ledger for company client on loss."""
+        from core.views import update_tally_from_balance_change
+        previous_balance = Decimal('10000.00')
+        new_balance = Decimal('9000.00')  # Loss of 1000
+        result = update_tally_from_balance_change(
+            self.company_client_exchange,
+            previous_balance,
+            new_balance
+        )
+        # Loss = 1000
+        # Total share = 10% of 1000 = 100 (client owes you)
+        # Your cut = 1% of 1000 = 10
+        # Company cut = 9% of 1000 = 90 (company owes you)
+        self.assertGreater(result['client_owes_you'], Decimal('0'))
+        self.assertGreater(result['company_owes_you'], Decimal('0'))
+        self.assertEqual(result['your_earnings'], Decimal('10.00'))
+
+    def test_update_tally_from_balance_change_profit(self):
+        """Test updating tally ledger for company client on profit."""
+        from core.views import update_tally_from_balance_change
+        previous_balance = Decimal('10000.00')
+        new_balance = Decimal('11000.00')  # Profit of 1000
+        result = update_tally_from_balance_change(
+            self.company_client_exchange,
+            previous_balance,
+            new_balance
+        )
+        # Profit = 1000
+        # Total share = 10% of 1000 = 100 (you owe client)
+        # Your cut = 1% of 1000 = 10
+        # Company cut = 9% of 1000 = 90 (you owe company)
+        self.assertGreater(result['you_owe_client'], Decimal('0'))
+        self.assertGreater(result['you_owe_company'], Decimal('0'))
+        self.assertEqual(result['your_earnings'], Decimal('10.00'))
+
+    def test_update_tally_my_client(self):
+        """Test that tally is not updated for my clients."""
+        from core.views import update_tally_from_balance_change
+        result = update_tally_from_balance_change(
+            self.my_client_exchange,
+            Decimal('10000.00'),
+            Decimal('9000.00')
+        )
+        # Should return zeros for my clients
+        self.assertEqual(result['client_owes_you'], Decimal('0'))
+        self.assertEqual(result['you_owe_client'], Decimal('0'))
+        self.assertEqual(result['your_earnings'], Decimal('0'))
+
+    def test_create_loss_profit_from_balance_change_loss(self):
+        """Test creating loss transaction from balance change."""
+        from core.views import create_loss_profit_from_balance_change
+        old_balance = Decimal('10000.00')
+        new_balance = Decimal('9000.00')  # Loss of 1000
+        transaction = create_loss_profit_from_balance_change(
+            self.my_client_exchange,
+            old_balance,
+            new_balance,
+            date.today()
+        )
+        self.assertIsNotNone(transaction)
+        self.assertEqual(transaction.transaction_type, Transaction.TYPE_LOSS)
+        self.assertEqual(transaction.amount, Decimal('1000.00'))
+        # My share = 10% of 1000 = 100
+        self.assertEqual(transaction.your_share_amount, Decimal('100.00'))
+
+    def test_create_loss_profit_from_balance_change_profit(self):
+        """Test creating profit transaction from balance change."""
+        from core.views import create_loss_profit_from_balance_change
+        old_balance = Decimal('10000.00')
+        new_balance = Decimal('11000.00')  # Profit of 1000
+        transaction = create_loss_profit_from_balance_change(
+            self.my_client_exchange,
+            old_balance,
+            new_balance,
+            date.today()
+        )
+        self.assertIsNotNone(transaction)
+        self.assertEqual(transaction.transaction_type, Transaction.TYPE_PROFIT)
+        self.assertEqual(transaction.amount, Decimal('1000.00'))
+        # My share = 10% of 1000 = 100
+        self.assertEqual(transaction.your_share_amount, Decimal('100.00'))
+
+    def test_create_loss_profit_from_balance_change_no_change(self):
+        """Test that no transaction is created when balance doesn't change."""
+        from core.views import create_loss_profit_from_balance_change
+        old_balance = Decimal('10000.00')
+        new_balance = Decimal('10000.00')  # No change
+        transaction = create_loss_profit_from_balance_change(
+            self.my_client_exchange,
+            old_balance,
+            new_balance,
+            date.today()
+        )
+        self.assertIsNone(transaction)
+
+    def test_create_loss_profit_company_client(self):
+        """Test creating loss/profit for company client with internal split."""
+        from core.views import create_loss_profit_from_balance_change
+        old_balance = Decimal('10000.00')
+        new_balance = Decimal('9000.00')  # Loss of 1000
+        transaction = create_loss_profit_from_balance_change(
+            self.company_client_exchange,
+            old_balance,
+            new_balance,
+            date.today()
+        )
+        self.assertIsNotNone(transaction)
+        # Total share = 10% of 1000 = 100
+        # Your cut = 1% of 1000 = 10
+        # Company cut = 9% of 1000 = 90
+        self.assertEqual(transaction.client_share_amount, Decimal('100.00'))
+        self.assertEqual(transaction.your_share_amount, Decimal('10.00'))
+        self.assertEqual(transaction.company_share_amount, Decimal('90.00'))
+
+
+# ============================================================================
+# SIGNAL TESTS
+# ============================================================================
+
+class SignalTest(TestCase):
+    """Test Django signals for cache updates."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_transaction_save_updates_cache(self):
+        """Test that saving a transaction updates cache."""
+        # Create funding transaction
+        transaction = Transaction.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # Refresh from DB
+        self.client_exchange.refresh_from_db()
+        # Cache should be updated (may take a moment due to async nature)
+        # Check that cached_total_funding is set
+        self.assertIsNotNone(self.client_exchange.cached_total_funding)
+
+    def test_transaction_delete_updates_cache(self):
+        """Test that deleting a transaction updates cache."""
+        transaction = Transaction.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        transaction_id = transaction.id
+        transaction.delete()
+        # Refresh from DB
+        self.client_exchange.refresh_from_db()
+        # Cache should be updated
+        self.assertIsNotNone(self.client_exchange.balance_last_updated)
+
+    def test_balance_save_updates_cache(self):
+        """Test that saving a balance record updates cache."""
+        balance = ClientDailyBalance.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            remaining_balance=Decimal('5000.00')
+        )
+        # Refresh from DB
+        self.client_exchange.refresh_from_db()
+        # Cache should be updated
+        self.assertIsNotNone(self.client_exchange.balance_last_updated)
+
+    def test_balance_delete_updates_cache(self):
+        """Test that deleting a balance record updates cache."""
+        balance = ClientDailyBalance.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            remaining_balance=Decimal('5000.00')
+        )
+        balance.delete()
+        # Refresh from DB
+        self.client_exchange.refresh_from_db()
+        # Cache should be updated
+        self.assertIsNotNone(self.client_exchange.balance_last_updated)
+
+
+# ============================================================================
+# ADDITIONAL VIEW TESTS
+# ============================================================================
+
+class DashboardViewTest(TestCase):
+    """Test dashboard view."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client.login(username='testuser', password='testpass123')
+
+    def test_dashboard_view_loads(self):
+        """Test dashboard page loads."""
+        response = self.http_client.get(reverse('dashboard'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_dashboard_with_data(self):
+        """Test dashboard with client and transaction data."""
+        client = Client.objects.create(
+            user=self.user,
+            name="Test Client",
+            code="TC001"
+        )
+        exchange = Exchange.objects.create(name="Diamond Exchange")
+        client_exchange = ClientExchange.objects.create(
+            client=client,
+            exchange=exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+        Transaction.objects.create(
+            client_exchange=client_exchange,
+            date=date.today(),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        response = self.http_client.get(reverse('dashboard'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Test Client')
+
+
+class ReportViewTest(TestCase):
+    """Test report views."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client.login(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_report_overview(self):
+        """Test report overview page."""
+        response = self.http_client.get(reverse('reports:overview'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_report_daily(self):
+        """Test daily report page."""
+        response = self.http_client.get(reverse('reports:daily'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_report_weekly(self):
+        """Test weekly report page."""
+        response = self.http_client.get(reverse('reports:weekly'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_report_monthly(self):
+        """Test monthly report page."""
+        response = self.http_client.get(reverse('reports:monthly'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_report_custom(self):
+        """Test custom report page."""
+        response = self.http_client.get(reverse('reports:custom'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_time_travel_report(self):
+        """Test time travel report page."""
+        response = self.http_client.get(reverse('reports:time_travel'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_report_client(self):
+        """Test client report page."""
+        response = self.http_client.get(reverse('clients:report', args=[self.client.pk]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_report_exchange(self):
+        """Test exchange report page."""
+        response = self.http_client.get(reverse('exchanges:report', args=[self.exchange.pk]))
+        self.assertEqual(response.status_code, 200)
+
+
+class SettingsViewTest(TestCase):
+    """Test settings view."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client.login(username='testuser', password='testpass123')
+
+    def test_settings_view_get(self):
+        """Test settings page loads."""
+        response = self.http_client.get(reverse('settings'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_settings_view_post(self):
+        """Test updating settings."""
+        response = self.http_client.post(reverse('settings'), {
+            'admin_loss_share_pct': '6.00',
+            'company_loss_share_pct': '11.00',
+            'admin_profit_share_pct': '6.00',
+            'company_profit_share_pct': '11.00',
+            'weekly_report_day': '1',
+            'auto_generate_weekly_reports': False
+        })
+        settings = SystemSettings.load()
+        self.assertEqual(settings.admin_loss_share_pct, Decimal('6.00'))
+
+
+class BalanceViewTest(TestCase):
+    """Test balance view."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client.login(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_client_balance_view(self):
+        """Test client balance page."""
+        response = self.http_client.get(reverse('clients:balance', args=[self.client.pk]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_client_balance_post(self):
+        """Test recording a balance."""
+        response = self.http_client.post(
+            reverse('clients:balance', args=[self.client.pk]),
+            {
+                'client_exchange': self.client_exchange.pk,
+                'date': date.today(),
+                'remaining_balance': '5000.00',
+                'extra_adjustment': '100.00'
+            }
+        )
+        # Should create a balance record
+        self.assertTrue(
+            ClientDailyBalance.objects.filter(
+                client_exchange=self.client_exchange,
+                date=date.today()
+            ).exists()
+        )
+
+
+class PendingViewTest(TestCase):
+    """Test pending payments view."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client.login(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_pending_summary_view(self):
+        """Test pending summary page."""
+        response = self.http_client.get(reverse('pending:summary'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_pending_summary_with_pending_amount(self):
+        """Test pending summary with pending amounts."""
+        PendingAmount.objects.create(
+            client_exchange=self.client_exchange,
+            pending_amount=Decimal('1000.00')
+        )
+        response = self.http_client.get(reverse('pending:summary'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Test Client')
+
+
+# ============================================================================
+# COMPREHENSIVE INTEGRATION TESTS
+# ============================================================================
+
+class ComprehensiveIntegrationTest(TestCase):
+    """Test comprehensive integration scenarios."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.my_client = Client.objects.create(
+            user=self.user,
+            name="My Client",
+            is_company_client=False
+        )
+        self.company_client = Client.objects.create(
+            user=self.user,
+            name="Company Client",
+            is_company_client=True
+        )
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.my_client_exchange = ClientExchange.objects.create(
+            client=self.my_client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('10.00'),
+            company_share_pct=Decimal('9.00')
+        )
+        self.company_client_exchange = ClientExchange.objects.create(
+            client=self.company_client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('10.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_my_client_full_workflow(self):
+        """Test complete workflow for my client."""
+        # 1. Create funding
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # 2. Record initial balance
+        ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 5),
+            remaining_balance=Decimal('10000.00')
+        )
+        # 3. Record loss (balance decreases)
+        ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 10),
+            remaining_balance=Decimal('9000.00')
+        )
+        # 4. Verify outstanding was created/updated
+        outstanding = OutstandingAmount.objects.filter(
+            client_exchange=self.my_client_exchange
+        ).first()
+        self.assertIsNotNone(outstanding)
+
+    def test_company_client_full_workflow(self):
+        """Test complete workflow for company client."""
+        # 1. Create funding
+        Transaction.objects.create(
+            client_exchange=self.company_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # 2. Record initial balance
+        ClientDailyBalance.objects.create(
+            client_exchange=self.company_client_exchange,
+            date=date(2024, 1, 5),
+            remaining_balance=Decimal('10000.00')
+        )
+        # 3. Record loss (balance decreases)
+        ClientDailyBalance.objects.create(
+            client_exchange=self.company_client_exchange,
+            date=date(2024, 1, 10),
+            remaining_balance=Decimal('9000.00')
+        )
+        # 4. Verify tally ledger was created/updated
+        tally = TallyLedger.objects.filter(
+            client_exchange=self.company_client_exchange
+        ).first()
+        self.assertIsNotNone(tally)
+
+    def test_settlement_workflow_my_client(self):
+        """Test settlement workflow for my client."""
+        # Create funding
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # Create loss
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 5),
+            transaction_type=Transaction.TYPE_LOSS,
+            amount=Decimal('1000.00'),
+            your_share_amount=Decimal('100.00')
+        )
+        # Create outstanding
+        outstanding = OutstandingAmount.objects.create(
+            client_exchange=self.my_client_exchange,
+            outstanding_amount=Decimal('100.00')
+        )
+        # Client pays settlement
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 10),
+            transaction_type=Transaction.TYPE_SETTLEMENT,
+            amount=Decimal('50.00'),
+            your_share_amount=Decimal('50.00'),
+            client_share_amount=Decimal('0')
+        )
+        # Outstanding should be reduced (manually in real workflow)
+        outstanding.refresh_from_db()
+        # In real workflow, this would be handled by business logic
+
+    def test_multiple_transactions_ordering(self):
+        """Test that transactions are properly ordered."""
+        dates = [date(2024, 1, i) for i in range(1, 6)]
+        for d in dates:
+            Transaction.objects.create(
+                client_exchange=self.my_client_exchange,
+                date=d,
+                transaction_type=Transaction.TYPE_FUNDING,
+                amount=Decimal('1000.00')
+            )
+        transactions = list(Transaction.objects.all())
+        # Should be ordered by date descending
+        self.assertEqual(transactions[0].date, date(2024, 1, 5))
+        self.assertEqual(transactions[-1].date, date(2024, 1, 1))
+
+    def test_client_security_deposit(self):
+        """Test client security deposit field."""
+        company_client = Client.objects.create(
+            user=self.user,
+            name="Security Deposit Client",
+            is_company_client=True,
+            security_deposit=Decimal('5000.00'),
+            security_deposit_paid_date=date.today()
+        )
+        self.assertEqual(company_client.security_deposit, Decimal('5000.00'))
+        self.assertEqual(company_client.security_deposit_paid_date, date.today())
+
+    def test_calculate_net_tallies_from_transactions(self):
+        """Test calculating net tallies from transactions."""
+        from core.views import calculate_net_tallies_from_transactions
+        # Create loss transaction
+        Transaction.objects.create(
+            client_exchange=self.company_client_exchange,
+            date=date(2024, 1, 5),
+            transaction_type=Transaction.TYPE_LOSS,
+            amount=Decimal('1000.00'),
+            client_share_amount=Decimal('100.00'),
+            your_share_amount=Decimal('10.00'),
+            company_share_amount=Decimal('90.00')
+        )
+        # Create profit transaction
+        Transaction.objects.create(
+            client_exchange=self.company_client_exchange,
+            date=date(2024, 1, 10),
+            transaction_type=Transaction.TYPE_PROFIT,
+            amount=Decimal('500.00'),
+            client_share_amount=Decimal('50.00'),
+            your_share_amount=Decimal('5.00'),
+            company_share_amount=Decimal('45.00')
+        )
+        result = calculate_net_tallies_from_transactions(self.company_client_exchange)
+        # Should calculate net amounts from transactions
+        self.assertIn('client_owes_you', result)
+        self.assertIn('you_owe_client', result)
+
+    def test_get_exchange_balance_with_as_of_date(self):
+        """Test get_exchange_balance with as_of_date parameter."""
+        from core.views import get_exchange_balance
+        # Create balance record
+        ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 5),
+            remaining_balance=Decimal('5000.00')
+        )
+        # Create later balance record
+        ClientDailyBalance.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 10),
+            remaining_balance=Decimal('6000.00')
+        )
+        # Get balance as of date between the two
+        balance = get_exchange_balance(self.my_client_exchange, as_of_date=date(2024, 1, 7))
+        # Should return the balance from 2024-01-05
+        self.assertEqual(balance, Decimal('5000.00'))
+
+    def test_get_old_balance_after_settlement_with_funding_after(self):
+        """Test old balance calculation with funding after settlement."""
+        from core.views import get_old_balance_after_settlement
+        # Create funding before settlement
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 1),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('10000.00')
+        )
+        # Create settlement
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 5),
+            transaction_type=Transaction.TYPE_SETTLEMENT,
+            amount=Decimal('3.00'),
+            your_share_amount=Decimal('3.00'),
+            client_share_amount=Decimal('0')
+        )
+        # Create funding after settlement
+        Transaction.objects.create(
+            client_exchange=self.my_client_exchange,
+            date=date(2024, 1, 10),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('2000.00')
+        )
+        old_balance = get_old_balance_after_settlement(self.my_client_exchange)
+        # Old balance = funding before (10000) - loss settled (30) + funding after (2000) = 11970
+        self.assertGreater(old_balance, Decimal('10000.00'))
+
+
+# ============================================================================
+# URL AND ROUTING TESTS
+# ============================================================================
+
+class URLRoutingTest(TestCase):
+    """Test URL routing and reverse lookups."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client = TestClient()
+        self.http_client.login(username='testuser', password='testpass123')
+
+    def test_all_url_patterns_resolve(self):
+        """Test that all URL patterns resolve correctly."""
+        from django.urls import reverse, NoReverseMatch
+        # Test main URLs
+        urls_to_test = [
+            ('dashboard', []),
+            ('login', []),
+            ('logout', []),
+            ('settings', []),
+            ('clients:list', []),
+            ('clients:company_list', []),
+            ('clients:my_list', []),
+            ('exchanges:list', []),
+            ('transactions:list', []),
+            ('pending:summary', []),
+            ('reports:overview', []),
+            ('reports:daily', []),
+            ('reports:weekly', []),
+            ('reports:monthly', []),
+            ('reports:custom', []),
+            ('reports:time_travel', []),
+        ]
+        for url_name, args in urls_to_test:
+            try:
+                url = reverse(url_name, args=args)
+                response = self.http_client.get(url)
+                # Should not raise 404
+                self.assertNotEqual(response.status_code, 404, f"URL {url_name} returned 404")
+            except NoReverseMatch:
+                self.fail(f"Could not reverse URL: {url_name}")
+
+
+# ============================================================================
+# FORM VALIDATION TESTS
+# ============================================================================
+
+class FormValidationTest(TestCase):
+    """Test form validation and error handling."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.http_client.login(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_transaction_create_validation(self):
+        """Test transaction creation form validation."""
+        # Try to create transaction with invalid data
+        response = self.http_client.post(reverse('transactions:add'), {
+            'client_exchange': self.client_exchange.pk,
+            'date': '',  # Invalid date
+            'transaction_type': Transaction.TYPE_PROFIT,
+            'amount': 'invalid'  # Invalid amount
+        })
+        # Should not create transaction
+        self.assertNotEqual(response.status_code, 302)  # Should not redirect (success)
+
+    def test_client_create_validation(self):
+        """Test client creation form validation."""
+        # Try to create client without required fields
+        response = self.http_client.post(reverse('clients:add_my'), {
+            'name': '',  # Empty name
+            'code': 'TEST001'
+        })
+        # Should not create client
+        self.assertNotEqual(response.status_code, 302)
+
+    def test_exchange_create_validation(self):
+        """Test exchange creation form validation."""
+        # Try to create exchange with duplicate name
+        Exchange.objects.create(name="Duplicate Exchange")
+        response = self.http_client.post(reverse('exchanges:add'), {
+            'name': 'Duplicate Exchange',  # Duplicate name
+            'code': 'DUP',
+            'is_active': True
+        })
+        # Should not create exchange
+        self.assertNotEqual(response.status_code, 302)
+
+
+# ============================================================================
+# PERMISSION AND SECURITY TESTS
+# ============================================================================
+
+class PermissionTest(TestCase):
+    """Test permissions and security."""
+
+    def setUp(self):
+        self.http_client = TestClient()
+        self.user1 = User.objects.create_user(username='user1', password='pass123')
+        self.user2 = User.objects.create_user(username='user2', password='pass123')
+        self.client1 = Client.objects.create(user=self.user1, name="User1 Client")
+        self.client2 = Client.objects.create(user=self.user2, name="User2 Client")
+
+    def test_user_cannot_access_other_user_client(self):
+        """Test that users cannot access other users' clients."""
+        self.http_client.login(username='user1', password='pass123')
+        # Try to access user2's client
+        response = self.http_client.get(reverse('clients:detail', args=[self.client2.pk]))
+        # Should return 404 or 403
+        self.assertIn(response.status_code, [404, 403])
+
+    def test_user_cannot_delete_other_user_client(self):
+        """Test that users cannot delete other users' clients."""
+        self.http_client.login(username='user1', password='pass123')
+        # Try to delete user2's client
+        response = self.http_client.post(reverse('clients:delete', args=[self.client2.pk]))
+        # Should return 404 or 403
+        self.assertIn(response.status_code, [404, 403])
+        # Client should still exist
+        self.assertTrue(Client.objects.filter(pk=self.client2.pk).exists())
+
+    def test_unauthenticated_user_redirected(self):
+        """Test that unauthenticated users are redirected to login."""
+        self.http_client.logout()
+        protected_urls = [
+            reverse('dashboard'),
+            reverse('clients:list'),
+            reverse('transactions:list'),
+        ]
+        for url in protected_urls:
+            response = self.http_client.get(url)
+            self.assertRedirects(response, f"{reverse('login')}?next={url}")
+
+
+# ============================================================================
+# DATA INTEGRITY TESTS
+# ============================================================================
+
+class DataIntegrityTest(TestCase):
+    """Test data integrity and constraints."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser', password='testpass123')
+        self.client = Client.objects.create(user=self.user, name="Test Client")
+        self.exchange = Exchange.objects.create(name="Diamond Exchange")
+        self.client_exchange = ClientExchange.objects.create(
+            client=self.client,
+            exchange=self.exchange,
+            my_share_pct=Decimal('30.00'),
+            company_share_pct=Decimal('9.00')
+        )
+
+    def test_client_exchange_cascade_delete(self):
+        """Test that deleting client deletes client_exchange."""
+        client_id = self.client.pk
+        self.client.delete()
+        # ClientExchange should be deleted
+        self.assertFalse(ClientExchange.objects.filter(pk=self.client_exchange.pk).exists())
+
+    def test_transaction_cascade_delete(self):
+        """Test that deleting client_exchange deletes transactions."""
+        transaction = Transaction.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            transaction_type=Transaction.TYPE_FUNDING,
+            amount=Decimal('1000.00')
+        )
+        transaction_id = transaction.pk
+        self.client_exchange.delete()
+        # Transaction should be deleted
+        self.assertFalse(Transaction.objects.filter(pk=transaction_id).exists())
+
+    def test_balance_record_cascade_delete(self):
+        """Test that deleting client_exchange deletes balance records."""
+        balance = ClientDailyBalance.objects.create(
+            client_exchange=self.client_exchange,
+            date=date.today(),
+            remaining_balance=Decimal('5000.00')
+        )
+        balance_id = balance.pk
+        self.client_exchange.delete()
+        # Balance record should be deleted
+        self.assertFalse(ClientDailyBalance.objects.filter(pk=balance_id).exists())
+
+    def test_pending_amount_cascade_delete(self):
+        """Test that deleting client_exchange deletes pending amount."""
+        pending = PendingAmount.objects.create(
+            client_exchange=self.client_exchange,
+            pending_amount=Decimal('1000.00')
+        )
+        pending_id = pending.pk
+        self.client_exchange.delete()
+        # Pending amount should be deleted
+        self.assertFalse(PendingAmount.objects.filter(pk=pending_id).exists())

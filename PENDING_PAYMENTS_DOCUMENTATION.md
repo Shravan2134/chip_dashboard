@@ -1,569 +1,618 @@
-# Pending Payments Calculation Documentation
+# Pending Payments System Documentation
 
 ## Overview
 
-This document explains how pending payments are calculated in the system, including all formulas, logic, and differences between **My Clients** and **Company Clients**.
-
-## 🔑 Core Principle
-
-**Old Balance and Current Balance define reality. Total Loss comes ONLY from those two. My Share and Company Share must ALWAYS be derived from Total Loss. Nothing else should influence share calculation.**
-
-## 🔑 Core Principle
-
-**Old Balance and Current Balance define reality. Total Loss comes ONLY from those two. My Share and Company Share must ALWAYS be derived from Total Loss. Nothing else should influence share calculation.**
+This document explains how the pending payments system calculates all financial values, including Old Balance, Current Balance, Total Loss/Profit, Shares, and Percentages for both My Clients and Company Clients.
 
 ---
 
 ## Table of Contents
 
-1. [Key Concepts](#key-concepts)
-2. [Column Definitions](#column-definitions)
-3. [Calculation Logic for My Clients](#calculation-logic-for-my-clients)
-4. [Calculation Logic for Company Clients](#calculation-logic-for-company-clients)
-5. [Example Calculations](#example-calculations)
-6. [Important Rules](#important-rules)
+1. [Core Concepts](#core-concepts)
+2. [Old Balance Calculation](#old-balance-calculation)
+3. [Current Balance Calculation](#current-balance-calculation)
+4. [Net Profit / Total Loss Calculation](#net-profit--total-loss-calculation)
+5. [Share Calculations](#share-calculations)
+6. [Share Percentages](#share-percentages)
+7. [Pending Amount Calculation](#pending-amount-calculation)
+8. [Examples](#examples)
+9. [Business Rules](#business-rules)
 
 ---
 
-## Key Concepts
+## Core Concepts
 
-### Transaction Types
+### Key Principles
 
-The system uses the following transaction types:
-- **FUNDING**: Money you give to the client (increases exchange balance)
-- **PROFIT**: Client makes profit (increases exchange balance)
-- **LOSS**: Client incurs loss (decreases exchange balance)
-- **SETTLEMENT**: Payment made (reduces pending amount)
-- **BALANCE_RECORD**: Recorded balance snapshot (for historical tracking)
-
-### Client Types
-
-1. **My Clients**: Direct clients where you handle all transactions
-2. **Company Clients**: Clients managed through a company, with split shares
+1. **Old Balance and Current Balance define reality** - Everything else is derived from these two values
+2. **Net Profit is the ONLY source of truth** - All share calculations come from Net Profit
+3. **Shares are stateless** - They are recalculated fresh every time from Net Profit
+4. **Pending is stateful** - It depends on settlements made (Pending = Share Amount - Settlements)
+5. **Settlement resets Old Balance** - When a settlement occurs, Old Balance moves forward
 
 ---
 
-## Column Definitions
+## Old Balance Calculation
 
-### 1. Old Balance
+### Definition
 
-**Definition**: The exchange balance immediately **BEFORE** any loss/profit occurred.
+**Old Balance** = The exchange balance immediately BEFORE the current profit/loss situation. This represents the original capital invested (after accounting for settlements).
 
-**Calculation Method**:
+### Formula
+
 ```
-Old Balance = SUM of all FUNDING transactions
-```
-
-**Important Notes**:
-- Old Balance is calculated from **FUNDING transactions only**
-- It does NOT include BALANCE_RECORD
-- It represents the total money that was put into the exchange
-- For company clients, if there's a loss and total funding > current balance, we use total funding as old balance
-
-**Formula**:
-```python
-Old Balance = Σ(FUNDING.amount) for all funding transactions
+IF settlement exists:
+    Old Balance = Current Balance AT settlement date + Funding AFTER settlement
+ELSE:
+    Old Balance = SUM of ALL FUNDING transactions
 ```
 
-### 2. Current Balance
+### Detailed Logic
 
-**Definition**: The current exchange balance as of the latest balance record.
+#### Step 1: Check for Settlements
 
-**Calculation Method**:
-```
-Current Balance = Latest BALANCE_RECORD.remaining_balance
-```
+The system first checks if any SETTLEMENT transactions exist for the client-exchange pair.
 
-**Important Notes**:
-- Current Balance comes from the most recent BALANCE_RECORD
-- If no balance record exists, it's calculated from transactions
-- This is the "real-world" balance in the exchange right now
+#### Step 2A: If Settlement Exists
 
-### 3. Total Loss
+1. Find the **last SETTLEMENT transaction** (most recent date)
+2. Get **Current Balance AT the settlement date** using `get_exchange_balance(client_exchange, as_of_date=last_settlement.date)`
+3. Get all **FUNDING transactions AFTER the last settlement** (date > settlement date)
+4. Calculate: `Old Balance = balance_at_settlement + funding_after_settlement`
 
-**Definition**: The total 100% loss that the client has incurred.
+**Why this works:**
+- Settlement closes part of the loss
+- The balance at settlement becomes the new base
+- Only funding after settlement counts toward new capital
 
-**Calculation Formula**:
-```
-Total Loss = Old Balance - Current Balance
-```
+#### Step 2B: If No Settlement Exists
 
-**Important Notes**:
-- If Total Loss > 0: Client is in loss (Old Balance > Current Balance)
-- If Total Loss < 0: Client is in profit (Old Balance < Current Balance)
-- If Total Loss = 0: No profit, no loss (break-even)
+1. Get all **FUNDING transactions** (no date filter)
+2. Calculate: `Old Balance = SUM(all_funding_amounts)`
 
-**Example**:
-- Old Balance = ₹100.0
-- Current Balance = ₹10.0
-- Total Loss = ₹100.0 - ₹10.0 = ₹90.0
+**Why this works:**
+- No settlement means no capital reset
+- Total funding = original capital base
 
-### 4. My Share
+### Important Rules
 
-**Definition**: Your share of the loss (the amount you earn from the client's loss).
+✅ **DO:**
+- Always respect settlements when calculating Old Balance
+- Use balance_at_settlement as the new base after settlement
+- Only count funding that came AFTER the last settlement
 
-**Calculation for My Clients**:
-```
-Net Loss = Old Balance - Current Balance
-My Share = (Net Loss × My Share %) / 100
-My Share (Final) = My Share - Settlements Received
-```
+❌ **DON'T:**
+- Never use `sum(all_funding)` if a settlement exists
+- Never override Old Balance with total_funding after settlement
+- Never include funding that came before settlement in the new base
 
-**Calculation for Company Clients**:
-```
-My Share = Net Client Tally (from transaction calculations)
-```
+### Example
 
-**Important Notes**:
-- My Share is calculated from the **net loss**, not individual loss transactions
-- Settlements received reduce the pending My Share amount
-- My Share % is stored in `ClientExchange.my_share_pct`
+**Scenario:**
+- Dec 1: FUNDING ₹100
+- Dec 1: BALANCE_RECORD ₹10 (loss of ₹90)
+- Dec 2: SETTLEMENT ₹9 (client paid 10% share)
+- Dec 3: FUNDING ₹100
 
-### 5. Company Share
+**Calculation:**
+1. Settlement exists → Use settlement-aware logic
+2. Balance at settlement (Dec 2) = ₹10
+3. Funding after settlement = ₹100
+4. **Old Balance = ₹10 + ₹100 = ₹110**
 
-**Definition**: The company's share of the loss (only for Company Clients).
-
-**Calculation**:
-```
-Company Share = Net Company Tally (from transaction calculations)
-```
-
-**Important Notes**:
-- Company Share is **0** for My Clients
-- For Company Clients, it's calculated from net tallies
-- Company Share % is stored in `ClientExchange.company_share_pct`
-
-### 6. Combined Share (My + Company)
-
-**Definition**: The total share amount that needs to be paid.
-
-**Calculation for My Clients**:
-```
-Combined Share = My Share (Company Share is always 0)
-```
-
-**Calculation for Company Clients**:
-```
-Combined Share = My Share + Company Share
-```
-
-**Example**:
-- My Share = ₹0.9
-- Company Share = ₹8.1
-- Combined Share = ₹0.9 + ₹8.1 = ₹9.0
-
-### 7. My Share & Company Share (%)
-
-**Definition**: The percentage breakdown of shares.
-
-**For My Clients**:
-- Shows: **My Share %** (e.g., 10.0%)
-- This is the percentage from `ClientExchange.my_share_pct`
-
-**For Company Clients**:
-- Shows: **My Share & Company Share (%)** (e.g., 10.0%)
-- This represents the combined percentage (My Share % + Company Share %)
+**Without settlement-aware logic (WRONG):**
+- Old Balance = ₹100 + ₹100 = ₹200 ❌ (double-counts pre-settlement funding)
 
 ---
 
-## Calculation Logic for My Clients
+## Current Balance Calculation
 
-### Step-by-Step Process
+### Definition
 
-1. **Check if Loss Case**:
-   ```
-   Old Balance > Current Balance → Loss Case
-   ```
+**Current Balance** = The latest exchange balance recorded in the system. This is the actual current state of the client's account.
 
-2. **Calculate Net Loss**:
-   ```
-   Net Loss = Old Balance - Current Balance
-   ```
+### Formula
 
-3. **Get My Share Percentage**:
-   ```
-   My Share % = ClientExchange.my_share_pct
-   ```
+```
+Current Balance = Latest BALANCE_RECORD transaction amount
+```
 
-4. **Calculate My Share from Net Loss**:
-   ```
-   My Share (from Net Loss) = (Net Loss × My Share %) / 100
-   ```
+### Detailed Logic
 
-5. **Get Settlements Received**:
-   ```
-   Settlements = Σ(SETTLEMENT.your_share_amount) 
-                where client_share_amount = 0 
-                and your_share_amount > 0
-   ```
+1. Query all **BALANCE_RECORD transactions** for the client-exchange pair
+2. Order by date (descending) and created_at (descending)
+3. Take the **most recent** balance record
+4. Use its `amount` field as Current Balance
 
-6. **Calculate Final My Share (Pending)**:
-   ```
-   My Share (Final) = My Share (from Net Loss) - Settlements Received
-   ```
+### Important Rules
 
-7. **Set Company Share**:
-   ```
-   Company Share = 0 (My Clients don't have company share)
-   ```
+✅ **DO:**
+- Always use the latest BALANCE_RECORD
+- Consider both date and created_at for ordering
 
-8. **Calculate Combined Share**:
-   ```
-   Combined Share = My Share (Final)
-   ```
+❌ **DON'T:**
+- Never use FUNDING, LOSS, or PROFIT transactions for current balance
+- Never use cached values if they might be stale
 
-### Example: My Client Calculation
+### Example
 
-**Given**:
-- Old Balance = ₹100.0
-- Current Balance = ₹10.0
+**Scenario:**
+- Dec 1: BALANCE_RECORD ₹100
+- Dec 5: BALANCE_RECORD ₹50
+- Dec 10: BALANCE_RECORD ₹75
+
+**Current Balance = ₹75** (latest record)
+
+---
+
+## Net Profit / Total Loss Calculation
+
+### Definition
+
+**Net Profit** = The difference between Current Balance and Old Balance. This is the ONLY source of truth for all share calculations.
+
+### Formula
+
+```
+net_profit = current_balance - old_balance
+
+IF net_profit < 0:
+    Total Loss = abs(net_profit)
+    Total Profit = 0
+ELSE IF net_profit > 0:
+    Total Loss = 0
+    Total Profit = net_profit
+ELSE:
+    Total Loss = 0
+    Total Profit = 0
+```
+
+### Interpretation
+
+- **Net Profit < 0** → Client is in LOSS (client owes you)
+- **Net Profit > 0** → Client is in PROFIT (you owe client)
+- **Net Profit = 0** → Break-even (no pending)
+
+### Important Rules
+
+✅ **DO:**
+- Always calculate Net Profit first
+- Use Net Profit as the single source of truth
+- Derive Total Loss/Profit from Net Profit
+
+❌ **DON'T:**
+- Never mix loss and profit in one variable
+- Never use transaction tallies instead of Net Profit
+- Never accumulate losses/profits from individual transactions
+
+### Example
+
+**Scenario:**
+- Old Balance = ₹100
+- Current Balance = ₹10
+
+**Calculation:**
+- net_profit = ₹10 - ₹100 = -₹90
+- net_profit < 0 → Loss case
+- **Total Loss = ₹90**
+- **Total Profit = ₹0**
+
+---
+
+## Share Calculations
+
+### Definition
+
+**Shares** = The portion of Total Loss or Total Profit that belongs to you (My Share) and the company (Company Share).
+
+### Key Principle
+
+**Shares are STATELESS** - They are recalculated fresh every time from Net Profit. They do NOT accumulate or store state.
+
+### Formula
+
+```
+# Step 1: Calculate Net Profit (see above)
+net_profit = current_balance - old_balance
+
+# Step 2: Calculate share amounts (stateless)
+abs_net_profit = abs(net_profit)
+
+My Share Amount = abs_net_profit × (my_share_pct / 100)
+Company Share Amount = abs_net_profit × (company_share_pct / 100)
+Combined Share Amount = My Share Amount + Company Share Amount
+```
+
+### For My Clients
+
+- **My Share %** = Percentage from `ClientExchange.my_share_pct`
+- **Company Share %** = 0 (not applicable)
+- **My Share Amount** = `abs_net_profit × my_share_pct / 100`
+- **Company Share Amount** = 0
+- **Combined Share Amount** = My Share Amount
+
+### For Company Clients
+
+- **My Share %** = 1% (typically, from `ClientExchange.my_share_pct`)
+- **Company Share %** = 9% (typically, from `ClientExchange.company_share_pct`)
+- **My Share Amount** = `abs_net_profit × 1%`
+- **Company Share Amount** = `abs_net_profit × 9%`
+- **Combined Share Amount** = My Share Amount + Company Share Amount
+
+### Important Rules
+
+✅ **DO:**
+- Always calculate shares from Net Profit
+- Recalculate shares fresh every time (stateless)
+- Use the same formula for both My Clients and Company Clients
+
+❌ **DON'T:**
+- Never accumulate shares from individual transactions
+- Never store share amounts in database (they're derived)
+- Never use transaction tallies for shares
+
+### Example
+
+**Scenario (My Client):**
+- Old Balance = ₹100
+- Current Balance = ₹10
 - My Share % = 10%
-- Settlements Received = ₹0.0
 
-**Calculations**:
-1. Net Loss = ₹100.0 - ₹10.0 = ₹90.0
-2. My Share (from Net Loss) = (₹90.0 × 10%) / 100 = ₹9.0
-3. My Share (Final) = ₹9.0 - ₹0.0 = ₹9.0
-4. Company Share = ₹0.0
-5. Combined Share = ₹9.0 + ₹0.0 = ₹9.0
-6. Total Loss = ₹90.0
+**Calculation:**
+- net_profit = ₹10 - ₹100 = -₹90
+- abs_net_profit = ₹90
+- **My Share Amount = ₹90 × 10% = ₹9**
+- **Company Share Amount = ₹0**
+- **Combined Share Amount = ₹9**
 
-**Result**:
-- Total Loss: ₹90.0
-- Combined Share: ₹9.0
-- My Share %: 10.0%
+**Scenario (Company Client):**
+- Old Balance = ₹100
+- Current Balance = ₹10
+- My Share % = 1%
+- Company Share % = 9%
 
----
-
-## Calculation Logic for Company Clients
-
-### Step-by-Step Process
-
-1. **Calculate Net Tallies from Transactions**:
-   ```
-   Net Client Tally = Σ(Your Share from LOSS) - Σ(Your Share from PROFIT) - Settlements
-   Net Company Tally = Σ(Company Share from LOSS) - Σ(Company Share from PROFIT) - Payments
-   ```
-
-2. **Check if Loss Case**:
-   ```
-   Net Client Tally > 0 → Loss Case
-   ```
-
-3. **Set My Share**:
-   ```
-   My Share = Net Client Tally
-   ```
-
-4. **Set Company Share**:
-   ```
-   Company Share = Net Company Tally (if > 0, else 0)
-   ```
-
-5. **Calculate Combined Share**:
-   ```
-   Combined Share = My Share + Company Share
-   ```
-
-6. **Calculate Old Balance**:
-   ```
-   Old Balance = Total Funding (or balance after settlement + funding after)
-   ```
-
-7. **Calculate Current Balance**:
-   ```
-   Current Balance = Latest Balance Record
-   ```
-
-8. **Calculate Total Loss**:
-   ```
-   Total Loss = Old Balance - Current Balance
-   ```
-
-### Example: Company Client Calculation
-
-**Given**:
-- Old Balance = ₹100.0
-- Current Balance = ₹10.0
-- My Share % = 1% (your cut from company)
-- Company Share % = 9% (company's cut)
-- Total Share % = 10% (combined)
-
-**Calculations**:
-1. Total Loss = ₹100.0 - ₹10.0 = ₹90.0
-2. Total Share = (₹90.0 × 10%) / 100 = ₹9.0
-3. My Share = (₹90.0 × 1%) / 100 = ₹0.9
-4. Company Share = (₹90.0 × 9%) / 100 = ₹8.1
-5. Combined Share = ₹0.9 + ₹8.1 = ₹9.0
-
-**Result**:
-- Total Loss: ₹90.0
-- Combined Share: ₹9.0
-- My Share: ₹0.9
-- Company Share: ₹8.1
-- My Share & Company Share (%): 10.0%
+**Calculation:**
+- net_profit = ₹10 - ₹100 = -₹90
+- abs_net_profit = ₹90
+- **My Share Amount = ₹90 × 1% = ₹0.9**
+- **Company Share Amount = ₹90 × 9% = ₹8.1**
+- **Combined Share Amount = ₹0.9 + ₹8.1 = ₹9**
 
 ---
 
-## Example Calculations
+## Share Percentages
 
-### Example 1: My Client (a1 - diamond)
+### My Share Percentage
 
-**Input Data**:
-- Client Code: —
-- Client Name: a1
-- Exchange: diamond
-- Old Balance: ₹100.0
-- Current Balance: ₹10.0
-- My Share %: 10%
+**Definition:** Your share of profits/losses (as a percentage).
 
-**Calculations**:
-
-1. **Total Loss**:
-   ```
-   Total Loss = ₹100.0 - ₹10.0 = ₹90.0
-   ```
-
-2. **My Share**:
-   ```
-   Net Loss = ₹90.0
-   My Share = (₹90.0 × 10%) / 100 = ₹9.0
-   ```
-
-3. **Company Share**:
-   ```
-   Company Share = ₹0.0 (My Clients don't have company share)
-   ```
-
-4. **Combined Share**:
-   ```
-   Combined Share = ₹9.0 + ₹0.0 = ₹9.0
-   ```
-
-5. **Percentage**:
-   ```
-   My Share % = 10.0%
-   ```
-
-**Final Result**:
-| Column | Value |
-|--------|-------|
-| Old Balance | ₹100.0 |
-| Current Balance | ₹10.0 |
-| Total Loss | ₹90.0 |
-| Combined Share (My + Company) | ₹9.0 |
-| My Share & Company Share (%) | 10.0% |
-
-### Example 2: Company Client
-
-**Input Data**:
-- Old Balance: ₹200.0
-- Current Balance: ₹20.0
-- My Share %: 1%
-- Company Share %: 9%
-- Total Share %: 10%
-
-**Calculations**:
-
-1. **Total Loss**:
-   ```
-   Total Loss = ₹200.0 - ₹20.0 = ₹180.0
-   ```
-
-2. **Total Share**:
-   ```
-   Total Share = (₹180.0 × 10%) / 100 = ₹18.0
-   ```
-
-3. **My Share**:
-   ```
-   My Share = (₹180.0 × 1%) / 100 = ₹1.8
-   ```
-
-4. **Company Share**:
-   ```
-   Company Share = (₹180.0 × 9%) / 100 = ₹16.2
-   ```
-
-5. **Combined Share**:
-   ```
-   Combined Share = ₹1.8 + ₹16.2 = ₹18.0
-   ```
-
-**Final Result**:
-| Column | Value |
-|--------|-------|
-| Old Balance | ₹200.0 |
-| Current Balance | ₹20.0 |
-| Total Loss | ₹180.0 |
-| Combined Share (My + Company) | ₹18.0 |
-| My Share & Company Share (%) | 10.0% |
-
----
-
-## Important Rules
-
-### Rule 1: Old Balance = Current Balance → No Pending
-
-**If Old Balance equals Current Balance, then:**
-- Total Loss = 0
-- My Share = 0
-- Company Share = 0
-- Combined Share = 0
-- **Client is NOT shown in pending payments**
-
-This is a **hard rule** with no exceptions.
-
-### Rule 2: Profit Does NOT Reduce Pending
+**Source:** Stored in `ClientExchange.my_share_pct` field.
 
 **For My Clients:**
-- Profit transactions do NOT reduce pending amount
-- Only LOSS transactions and SETTLEMENT transactions affect pending
-- Pending = My Share from Net Loss - Settlements Received
-
-### Rule 3: Balance Records Do NOT Affect Pending
-
-- BALANCE_RECORD transactions are for tracking only
-- They do NOT affect pending calculations
-- Only FUNDING, LOSS, PROFIT, and SETTLEMENT affect pending
-
-### Rule 4: Funding Does NOT Affect Pending
-
-- FUNDING transactions increase exchange balance
-- They are used to calculate Old Balance
-- But they do NOT directly affect pending amount
-
-### Rule 5: Settlements Reduce Pending
-
-**For My Clients:**
-- When client pays you (SETTLEMENT with `client_share_amount = 0` and `your_share_amount > 0`)
-- This reduces the pending amount
-- Final Pending = My Share - Settlements Received
-
-### Rule 6: Company Clients Use Net Tallies
+- Typically ranges from 5% to 30%
+- This is your full share (no company split)
 
 **For Company Clients:**
-- Pending is calculated from net tallies (not net loss)
-- Net Tally = Σ(Loss Shares) - Σ(Profit Shares) - Settlements
-- This accounts for both losses and profits
+- Typically 1% (your cut from the company's 10% share)
+- The remaining 9% goes to the company
 
-### Rule 7: Combined Share Cannot Exceed Total Loss
+### Company Share Percentage
 
-**Validation:**
-- Combined Share ≤ Total Loss × (Total Share % / 100)
-- In the form, users cannot enter amount greater than Combined Share
-- Amount to Pay ≤ Combined Share
+**Definition:** Company's share of profits/losses (as a percentage).
+
+**Source:** Stored in `ClientExchange.company_share_pct` field.
+
+**For My Clients:**
+- Always 0% (not applicable)
+
+**For Company Clients:**
+- Typically 9% (company's portion of the 10% share)
+- Combined with your 1% = 10% total share
+
+### Combined Share Percentage
+
+**Definition:** Total share percentage (My Share % + Company Share %).
+
+**Formula:**
+```
+Combined Share % = my_share_pct + company_share_pct
+```
+
+**For My Clients:**
+- Combined Share % = My Share % (company_share_pct = 0)
+
+**For Company Clients:**
+- Combined Share % = 1% + 9% = 10% (typically)
+
+### Important Rules
+
+✅ **DO:**
+- Always fetch percentages from `ClientExchange` model
+- Use `my_share_pct` and `company_share_pct` fields
+- Calculate combined percentage by addition
+
+❌ **DON'T:**
+- Never hardcode percentages
+- Never calculate percentages from transaction amounts
+- Never assume percentages are the same for all clients
 
 ---
 
-## Data Flow Diagram
+## Pending Amount Calculation
+
+### Definition
+
+**Pending Amount** = The remaining amount that needs to be paid (either by client to you, or by you to client).
+
+### Key Principle
+
+**Pending is STATEFUL** - It depends on settlements made. It's calculated as: Share Amount - Settlements.
+
+### Formula
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    PENDING PAYMENTS CALCULATION              │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────┐
-        │   Get Client Exchange Data        │
-        │   - Old Balance (from Funding)   │
-        │   - Current Balance (from Record) │
-        │   - My Share %                    │
-        │   - Company Share %               │
-        └─────────────────────────────────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────┐
-        │   Calculate Total Loss              │
-        │   Total Loss = Old - Current        │
-        └─────────────────────────────────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────┐
-        │   Check Client Type                 │
-        │   - My Client?                      │
-        │   - Company Client?                 │
-        └─────────────────────────────────────┘
-                              │
-                ┌─────────────┴─────────────┐
-                ▼                           ▼
-    ┌───────────────────┐      ┌──────────────────────┐
-    │   MY CLIENT       │      │  COMPANY CLIENT      │
-    │                   │      │                      │
-    │ My Share =        │      │ My Share =           │
-    │ Net Loss ×        │      │ Net Client Tally     │
-    │ My Share %        │      │                      │
-    │                   │      │ Company Share =      │
-    │ Company Share = 0 │      │ Net Company Tally    │
-    │                   │      │                      │
-    │ Combined =        │      │ Combined =           │
-    │ My Share          │      │ My + Company         │
-    └───────────────────┘      └──────────────────────┘
-                │                           │
-                └─────────────┬─────────────┘
-                              ▼
-        ┌─────────────────────────────────────┐
-        │   Calculate Final Values            │
-        │   - Total Loss                      │
-        │   - Combined Share                  │
-        │   - My Share %                      │
-        │   - Company Share %                 │
-        └─────────────────────────────────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────┐
-        │   Display in Pending Payments UI   │
-        └─────────────────────────────────────┘
+# Step 1: Calculate Share Amount (stateless, from Net Profit)
+share_amount = abs(net_profit) × share_pct / 100
+
+# Step 2: Get settlements made
+IF net_profit < 0 (loss case):
+    settlements = SUM of SETTLEMENT transactions where client paid you
+    (your_share_amount > 0)
+ELSE IF net_profit > 0 (profit case):
+    settlements = SUM of SETTLEMENT transactions where you paid client
+    (client_share_amount > 0 AND your_share_amount = 0)
+
+# Step 3: Calculate Pending (stateful)
+pending = share_amount - settlements
+
+# Ensure pending is never negative
+pending = max(0, pending)
 ```
+
+### For Loss Case (Client Owes You)
+
+**My Share Pending:**
+```
+my_share_pending = my_share_amount - client_payments_to_you
+```
+
+**Company Share Pending:**
+```
+company_share_pending = company_share_amount - client_payments_to_company
+```
+
+**Combined Share Pending:**
+```
+combined_share_pending = combined_share_amount - total_client_payments
+```
+
+### For Profit Case (You Owe Client)
+
+**My Share Pending:**
+```
+my_share_pending = my_share_amount - your_payments_to_client
+```
+
+**Company Share Pending:**
+```
+company_share_pending = company_share_amount - your_payments_to_client
+```
+
+**Combined Share Pending:**
+```
+combined_share_pending = combined_share_amount - total_your_payments
+```
+
+### Important Rules
+
+✅ **DO:**
+- Always subtract settlements from share amounts
+- Ensure pending is never negative (use max(0, pending))
+- Track settlements separately for My Share and Company Share
+
+❌ **DON'T:**
+- Never accumulate pending from previous calculations
+- Never ignore settlements when calculating pending
+- Never mix loss and profit settlements
+
+### Example
+
+**Scenario (Loss Case):**
+- Old Balance = ₹100
+- Current Balance = ₹10
+- My Share % = 10%
+- Client paid ₹3 (settlement)
+
+**Calculation:**
+- net_profit = ₹10 - ₹100 = -₹90
+- my_share_amount = ₹90 × 10% = ₹9
+- settlements = ₹3
+- **My Share Pending = ₹9 - ₹3 = ₹6**
 
 ---
 
-## Summary
+## Examples
 
-### For My Clients:
-- **Old Balance**: Sum of all FUNDING transactions
-- **Current Balance**: Latest BALANCE_RECORD
-- **Total Loss**: Old Balance - Current Balance
-- **My Share**: (Total Loss × My Share %) / 100 - Settlements
-- **Company Share**: Always 0
-- **Combined Share**: My Share (same as My Share)
+### Example 1: My Client - Simple Loss
 
-### For Company Clients:
-- **Old Balance**: Sum of all FUNDING transactions (or total funding if > current balance)
-- **Current Balance**: Latest BALANCE_RECORD
-- **Total Loss**: Old Balance - Current Balance
-- **My Share**: Net Client Tally (from transaction calculations)
-- **Company Share**: Net Company Tally (from transaction calculations)
-- **Combined Share**: My Share + Company Share
+**Transactions:**
+- FUNDING: ₹100
+- BALANCE_RECORD: ₹10
+- My Share %: 10%
 
-### Key Differences:
-1. **My Clients**: Calculate from Net Loss directly
-2. **Company Clients**: Calculate from Net Tallies (accounts for both losses and profits)
-3. **My Clients**: No company share
-4. **Company Clients**: Split share (1% you, 9% company)
+**Calculations:**
+1. **Old Balance:** No settlement → ₹100 (sum of funding)
+2. **Current Balance:** ₹10 (latest balance record)
+3. **Net Profit:** ₹10 - ₹100 = -₹90
+4. **Total Loss:** ₹90
+5. **My Share Amount:** ₹90 × 10% = ₹9
+6. **Company Share Amount:** ₹0 (not applicable)
+7. **Combined Share Amount:** ₹9
+8. **Pending:** ₹9 - ₹0 = ₹9 (no settlements)
+
+---
+
+### Example 2: Company Client - Loss with Settlement
+
+**Transactions:**
+- FUNDING: ₹100
+- BALANCE_RECORD: ₹10
+- SETTLEMENT: ₹9 (client paid)
+- My Share %: 1%
+- Company Share %: 9%
+
+**Calculations:**
+1. **Old Balance:** Settlement exists → Balance at settlement (₹10) + Funding after (₹0) = ₹10
+2. **Current Balance:** ₹10 (latest balance record)
+3. **Net Profit:** ₹10 - ₹10 = ₹0
+4. **Total Loss:** ₹0 (settlement closed the loss)
+5. **My Share Amount:** ₹0 × 1% = ₹0
+6. **Company Share Amount:** ₹0 × 9% = ₹0
+7. **Combined Share Amount:** ₹0
+8. **Pending:** ₹0 (fully settled)
+
+---
+
+### Example 3: My Client - Profit Case
+
+**Transactions:**
+- FUNDING: ₹100
+- BALANCE_RECORD: ₹200
+- My Share %: 10%
+
+**Calculations:**
+1. **Old Balance:** No settlement → ₹100
+2. **Current Balance:** ₹200
+3. **Net Profit:** ₹200 - ₹100 = ₹100
+4. **Total Profit:** ₹100
+5. **My Share Amount:** ₹100 × 10% = ₹10
+6. **Pending:** ₹10 (you owe client ₹10)
+
+---
+
+### Example 4: Company Client - Partial Settlement
+
+**Transactions:**
+- FUNDING: ₹100
+- BALANCE_RECORD: ₹40
+- SETTLEMENT: ₹3 (client paid)
+- My Share %: 1%
+- Company Share %: 9%
+
+**Calculations:**
+1. **Old Balance:** Settlement exists → Balance at settlement (₹40) + Funding after (₹0) = ₹40
+2. **Current Balance:** ₹40
+3. **Net Profit:** ₹40 - ₹40 = ₹0
+4. **Total Loss:** ₹0 (settlement closed the loss)
+5. **My Share Amount:** ₹0 × 1% = ₹0
+6. **Company Share Amount:** ₹0 × 9% = ₹0
+7. **Combined Share Amount:** ₹0
+8. **Pending:** ₹0
+
+**Note:** The settlement of ₹3 closed ₹30 of loss (₹3 / 10% = ₹30), which moved Old Balance from ₹100 to ₹40.
+
+---
+
+## Business Rules
+
+### Rule 1: Settlement Resets Old Balance
+
+When a settlement occurs, Old Balance must move forward to the balance at settlement date. This prevents double-counting of losses.
+
+**Formula:**
+```
+Old Balance (after settlement) = balance_at_settlement + funding_after_settlement
+```
+
+### Rule 2: Net Profit is Single Source of Truth
+
+All share calculations must come from Net Profit. Never use transaction tallies or accumulated values.
+
+**Formula:**
+```
+net_profit = current_balance - old_balance
+share_amount = abs(net_profit) × share_pct / 100
+```
+
+### Rule 3: Shares are Stateless
+
+Shares are recalculated fresh every time from Net Profit. They do not store or accumulate state.
+
+### Rule 4: Pending is Stateful
+
+Pending depends on settlements made. It's calculated as Share Amount minus Settlements.
+
+**Formula:**
+```
+pending = share_amount - settlements_made
+```
+
+### Rule 5: Break-Even Rule
+
+If Old Balance equals Current Balance, there is no profit, no loss, and no pending.
+
+**Formula:**
+```
+IF old_balance == current_balance:
+    net_profit = 0
+    share_amount = 0
+    pending = 0
+```
+
+### Rule 6: Unified Logic for All Clients
+
+Both My Clients and Company Clients use the same calculation logic:
+- Same Old Balance calculation (settlement-aware)
+- Same Net Profit calculation
+- Same Share calculation (from Net Profit)
+- Only difference: Company Clients have two percentages (1% + 9%)
+
+### Rule 7: Never Override Old Balance
+
+Once Old Balance is calculated using settlement-aware logic, never override it with `sum(all_funding)`. This breaks the settlement reset mechanism.
 
 ---
 
 ## Technical Implementation
 
-### Database Fields Used:
-- `ClientExchange.my_share_pct`: Your share percentage
-- `ClientExchange.company_share_pct`: Company share percentage
-- `ClientExchange.client.is_company_client`: Client type flag
-- `Transaction.amount`: Transaction amount
-- `Transaction.transaction_type`: Type of transaction
-- `Transaction.your_share_amount`: Your share from transaction
-- `Transaction.company_share_amount`: Company share from transaction
-- `ClientDailyBalance.remaining_balance`: Current balance record
+### Key Functions
 
-### Key Functions:
-- `get_old_balance_after_settlement()`: Calculates old balance from funding
-- `calculate_net_tallies_from_transactions()`: Calculates net tallies for company clients
-- `calculate_client_profit_loss()`: Gets current balance and profit/loss data
+1. **`get_old_balance_after_settlement(client_exchange, as_of_date=None)`**
+   - Calculates Old Balance using settlement-aware logic
+   - Returns: Decimal (Old Balance amount)
+
+2. **`get_exchange_balance(client_exchange, as_of_date=None, use_cache=True)`**
+   - Gets Current Balance from latest BALANCE_RECORD
+   - Returns: Decimal (Current Balance amount)
+
+3. **`calculate_client_profit_loss(client_exchange)`**
+   - Calculates profit/loss data
+   - Returns: dict with exchange_balance and client_profit_loss
+
+### Data Sources
+
+- **Old Balance:** `Transaction` model (TYPE_FUNDING, TYPE_SETTLEMENT)
+- **Current Balance:** `ClientDailyBalance` or `Transaction` model (TYPE_BALANCE_RECORD)
+- **Share Percentages:** `ClientExchange` model (my_share_pct, company_share_pct)
+- **Settlements:** `Transaction` model (TYPE_SETTLEMENT)
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: December 2024  
-**Author**: System Documentation
+## Summary
+
+The pending payments system uses a unified, settlement-aware approach:
+
+1. **Old Balance** = balance_at_settlement + funding_after (if settlement exists) OR sum(all_funding) (if no settlement)
+2. **Current Balance** = latest BALANCE_RECORD
+3. **Net Profit** = current_balance - old_balance (single source of truth)
+4. **Shares** = abs(net_profit) × share_pct (stateless, recalculated fresh)
+5. **Pending** = share_amount - settlements (stateful, depends on payments made)
+
+This ensures accuracy, prevents double-counting, and maintains consistency across all client types.
+
+---
+
+**Last Updated:** 2025-12-28
+**Version:** 1.0
+
 

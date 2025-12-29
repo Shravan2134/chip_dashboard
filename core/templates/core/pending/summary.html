@@ -720,7 +720,13 @@
                 <th class="share-header company-share-header company-only">Company Amount</th>
                 <th class="share-header company-share-header company-only">Company %</th>
                 {% endif %}
-                <th class="share-header combined-share-header" style="display: none;">Combined Share (My + Company)</th>
+                <th class="share-header combined-share-header" style="display: none;">
+                    {% if client_type_filter == 'my' %}
+                        My Share
+                    {% else %}
+                        Combined Share (My + Company)
+                    {% endif %}
+                </th>
                 <th class="share-header combined-share-pct-header" style="display: none;">
                     {% if client_type_filter == 'my' %}
                         My Share %
@@ -854,7 +860,13 @@
                 <th class="share-header company-share-header company-only">Company Amount</th>
                 <th class="share-header company-share-header company-only">Company %</th>
                 {% endif %}
-                <th class="share-header combined-share-header" style="display: none;">Combined Share (My + Company)</th>
+                <th class="share-header combined-share-header" style="display: none;">
+                    {% if client_type_filter == 'my' %}
+                        My Share
+                    {% else %}
+                        Combined Share (My + Company)
+                    {% endif %}
+                </th>
                 <th class="share-header combined-share-pct-header" style="display: none;">
                     {% if client_type_filter == 'my' %}
                         My Share %

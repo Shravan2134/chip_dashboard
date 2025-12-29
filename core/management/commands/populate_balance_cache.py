@@ -50,3 +50,4 @@ class Command(BaseCommand):
             f'\nSuccessfully processed {processed}/{total} ClientExchange records.'
         ))
 
+
