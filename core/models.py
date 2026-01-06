@@ -164,6 +164,15 @@ class Transaction(TimeStampedModel):
     client_share_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     your_share_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     company_share_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    
+    # For SETTLEMENT transactions: capital_closed (audit trail)
+    capital_closed = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Capital closed by this settlement (for audit trail, only for SETTLEMENT transactions)"
+    )
 
     note = models.TextField(blank=True)
 
@@ -180,6 +189,26 @@ class Transaction(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.client_exchange} {self.transaction_type} {self.amount} on {self.date}"
+    
+    def clean(self):
+        """
+        Validate transaction before saving.
+        
+        ✅ FIX ISSUE 6: Prevent SETTLEMENT without active loss.
+        """
+        from django.core.exceptions import ValidationError
+        from .models import LossSnapshot
+        
+        if self.transaction_type == Transaction.TYPE_SETTLEMENT:
+            # Check if active loss exists for this client_exchange
+            if not LossSnapshot.objects.filter(
+                client_exchange=self.client_exchange,
+                is_settled=False
+            ).exists():
+                raise ValidationError(
+                    "Cannot create SETTLEMENT transaction: No active loss exists for this client-exchange. "
+                    "A loss must be recorded before settlements can be made."
+                )
     
     @property
     def exchange(self):
@@ -434,6 +463,121 @@ class TallyLedger(TimeStampedModel):
     
     def __str__(self):
         return f"{self.client_exchange} - Client: {self.net_client_payable}, Company: {self.net_company_payable}"
+
+
+class LossSnapshot(TimeStampedModel):
+    """
+    Frozen snapshot of loss state for a client-exchange.
+    
+    🔒 CRITICAL: LOSS is FROZEN at creation time and NEVER recalculated.
+    Only SETTLEMENT transactions can reduce the frozen loss amount.
+    
+    Key Rules:
+    1. Only ONE active LossSnapshot per client_exchange (is_settled=False)
+    2. Loss amount is frozen - never recalculated from Old Balance - Current Balance
+    3. Current Balance is frozen - new balance records don't affect loss calculations
+    4. Share percentages are frozen - historical correctness guaranteed
+    5. Loss reduced ONLY by SETTLEMENT transactions
+    """
+    client_exchange = models.ForeignKey(
+        "ClientExchange",
+        related_name="loss_snapshots",
+        on_delete=models.CASCADE,
+        help_text="Client-exchange combination this loss snapshot belongs to"
+    )
+    balance_record = models.ForeignKey(
+        "ClientDailyBalance",
+        related_name="loss_snapshots",
+        on_delete=models.PROTECT,
+        help_text="Frozen balance record at time of loss creation (CB is frozen)"
+    )
+    loss_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        help_text="ORIGINAL frozen loss amount - IMMUTABLE, NEVER changed after creation"
+    )
+    my_share_pct = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        help_text="Frozen my share percentage at loss creation time"
+    )
+    company_share_pct = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal(0),
+        help_text="Frozen company share percentage at loss creation time"
+    )
+    is_settled = models.BooleanField(
+        default=False,
+        help_text="True when loss is fully settled (remaining_loss = 0)"
+    )
+    note = models.TextField(
+        blank=True,
+        help_text="Optional note about this loss snapshot"
+    )
+    
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["client_exchange", "is_settled"]),
+            models.Index(fields=["is_settled"]),
+        ]
+        constraints = [
+            # HARD DB constraint: Only ONE active (is_settled=False) LossSnapshot per client_exchange
+            models.UniqueConstraint(
+                fields=["client_exchange"],
+                condition=models.Q(is_settled=False),
+                name="one_active_loss_per_exchange"
+            )
+        ]
+    
+    def __str__(self):
+        status = "Settled" if self.is_settled else "Active"
+        return f"{self.client_exchange} - Loss: ₹{self.loss_amount} ({status})"
+    
+    def get_remaining_loss(self):
+        """
+        Calculate remaining loss from original frozen loss minus all settlements.
+        
+        🔒 CRITICAL: LossSnapshot.loss_amount is IMMUTABLE (original loss).
+        Remaining loss is DERIVED from settlements, never stored.
+        
+        ✅ FIX: Uses transaction date (not created_at) to handle backdated settlements.
+        
+        Returns:
+            Decimal: Remaining loss amount
+        """
+        from .models import Transaction
+        from django.db.models import Sum
+        
+        # Get total capital closed from all SETTLEMENT transactions for this loss
+        # ✅ FIX: Use transaction date (not created_at) to handle backdated settlements
+        # ✅ CRITICAL: Only count transactions with dates (date__isnull=False)
+        # Only count settlements that occurred on or after the loss snapshot date
+        total_capital_closed = Transaction.objects.filter(
+            client_exchange=self.client_exchange,
+            transaction_type=Transaction.TYPE_SETTLEMENT,
+            capital_closed__isnull=False,
+            date__isnull=False,  # ✅ CRITICAL: Only count transactions with dates
+            date__gte=self.balance_record.date  # Use transaction date, not created_at
+        ).aggregate(total=Sum("capital_closed"))["total"] or Decimal(0)
+        
+        # ✅ CRITICAL: Ensure all values are Decimal (prevents int/float mixing)
+        total_capital_closed = Decimal(str(total_capital_closed))
+        loss_amount = Decimal(str(self.loss_amount))
+        
+        return max(self.loss_amount - total_capital_closed, Decimal(0))
+    
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        # Guard: Only one active loss snapshot per client_exchange
+        if not self.is_settled:
+            existing = LossSnapshot.objects.filter(
+                client_exchange=self.client_exchange,
+                is_settled=False
+            ).exclude(pk=self.pk if self.pk else None)
+            if existing.exists():
+                raise ValidationError("Only one active LossSnapshot allowed per client_exchange")
 
 
 class SystemSettings(models.Model):

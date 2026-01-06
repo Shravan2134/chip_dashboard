@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 import json
 
 from django.contrib.auth import logout, login, authenticate
@@ -12,13 +12,19 @@ from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 from django.utils import timezone
 
-from .models import Client, Exchange, ClientExchange, Transaction, CompanyShareRecord, SystemSettings, ClientDailyBalance, OutstandingAmount
+from .models import Client, Exchange, ClientExchange, Transaction, CompanyShareRecord, SystemSettings, ClientDailyBalance, OutstandingAmount, LossSnapshot
+from .utils.money import round_share, round_capital, AUTO_CLOSE_THRESHOLD, calculate_share_split
 
 
 def get_exchange_balance(client_exchange, as_of_date=None, use_cache=True):
     """
     Get exchange balance (separate ledger) as of a specific date.
     Exchange balance = latest recorded balance + extra adjustment up to as_of_date.
+    
+    🔒 CRITICAL: When active LossSnapshot exists, CB base is FROZEN from LossSnapshot.
+    BUT funding after loss creation MUST be added to CB.
+    
+    ✅ CORRECT FORMULA: CB = Frozen Balance (at loss creation) + Funding After Loss
     
     Args:
         client_exchange: ClientExchange instance
@@ -28,6 +34,27 @@ def get_exchange_balance(client_exchange, as_of_date=None, use_cache=True):
     Returns:
         Exchange balance as Decimal
     """
+    # ✅ BUG #1 FIX: If active LossSnapshot exists, CB = Frozen Balance + Funding After Loss
+    if as_of_date is None:  # Only check for current state, not historical
+        active_loss = LossSnapshot.objects.filter(
+            client_exchange=client_exchange,
+            is_settled=False
+        ).first()
+        
+        if active_loss:
+            # ✅ CORRECT: CB = Frozen Balance (at loss creation) + Funding After Loss
+            frozen_balance = active_loss.balance_record.remaining_balance
+            
+            # Get funding transactions AFTER loss creation date
+            funding_after_loss = Transaction.objects.filter(
+                client_exchange=client_exchange,
+                transaction_type=Transaction.TYPE_FUNDING,
+                date__gt=active_loss.balance_record.date  # Funding AFTER loss creation
+            ).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+            
+            # ✅ CORRECT CB: Frozen balance + funding after loss
+            return frozen_balance + funding_after_loss
+    
     # Use cached value if available and no specific date requested
     if use_cache and as_of_date is None:
         # Refresh cache if it's stale (older than 1 hour) or doesn't exist
@@ -112,16 +139,17 @@ def get_old_balance_after_settlement(client_exchange, as_of_date=None):
     if as_of_date:
         settlement_query = settlement_query.filter(date__lte=as_of_date)
     
-    # 🚨 CRITICAL: Enforce deterministic ordering to prevent ambiguity with same-day settlements
-    # ORDER BY date DESC, created_at DESC ensures we always get the most recent settlement
-    # This prevents old_balance from jumping backward when multiple settlements share the same date
-    last_settlement = settlement_query.order_by("-date", "-created_at").first()
+    # ✅ ERROR 4 FIX: Settlement ordering MUST be deterministic
+    # ORDER BY created_at DESC, id DESC ensures we always get the most recent settlement
+    # Date alone is insufficient - must use created_at + id for true ordering
+    last_settlement = settlement_query.order_by("-created_at", "-id").first()
     
     if last_settlement:
         # Settlement exists - Old Balance RESETS to reflect the settlement
         # 🔒 KEY RULE: Payment = closing the book → Old Balance moves forward
         
-        # 🚨 CRITICAL FIX: Use cached_old_balance from ClientExchange as PRIMARY source
+        # 🚨 CRITICAL FIX: Use cached_old_balance from ClientExchange as PERFORMANCE CACHE
+        # ✅ FIX ISSUE 5: cached_old_balance is a display cache, ledger is source of truth
         # This is updated during settlement and is the single source of truth
         # BALANCE_RECORDs are NOT used for Old Balance (they contain exchange reality, not virtual Old Balance)
         # 
@@ -134,22 +162,43 @@ def get_old_balance_after_settlement(client_exchange, as_of_date=None):
         
         # 🚨 FIX: Always use cached_old_balance if it exists - it's updated during settlement
         # The cache is the single source of truth after settlement
-        # 🚨 CRITICAL: Refresh from database to get the latest cached value
+    # 🚨 CRITICAL: Refresh from database to get the latest cached value
         # The client_exchange object might be stale if it was loaded before settlement
         client_exchange.refresh_from_db()
-        
+
         use_cached = False
         if client_exchange.cached_old_balance is not None:
             # Cache exists - use it as primary source (it's updated during settlement)
             # We don't check age because the cache is updated atomically during settlement
             use_cached = True
             base_old_balance = client_exchange.cached_old_balance
-            base_old_balance = base_old_balance.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            base_old_balance = round_capital(base_old_balance, decimals=1)  # Capital-space: old balance
             
             # 🚨 DEBUG: Verify cache is being used (temporary - remove after debugging)
             print(f"DEBUG get_old_balance: Using cached OB = {base_old_balance} for {client_exchange.client.name} (cache was: {client_exchange.cached_old_balance})")
         
-        if not use_cached:
+        # ✅ ERROR 1 FIX: Bootstrap cached_old_balance if NULL
+        # If cache is NULL, calculate from funding and update cache
+        if not use_cached and not last_settlement:
+            # Cache is missing AND no settlement exists - calculate from funding (bootstrap)
+            funding_query = Transaction.objects.filter(
+                client_exchange=client_exchange,
+                transaction_type=Transaction.TYPE_FUNDING  # Exact match: "FUNDING"
+            )
+            if as_of_date:
+                funding_query = funding_query.filter(date__lte=as_of_date)
+            
+            total_funding = funding_query.aggregate(total=Sum("amount"))["total"] or Decimal(0)
+            base_old_balance = total_funding
+            
+            # Update cache for future use (bootstrap)
+            if base_old_balance > 0:
+                client_exchange.cached_old_balance = base_old_balance
+                client_exchange.balance_last_updated = timezone.now()
+                client_exchange.save(update_fields=['cached_old_balance', 'balance_last_updated'])
+            return base_old_balance
+        
+        if not use_cached and last_settlement:
             # Cache is missing or stale - recalculate from settlement history (fallback only)
             # This should only happen for old data or if cache was cleared
             
@@ -161,15 +210,19 @@ def get_old_balance_after_settlement(client_exchange, as_of_date=None):
             ).aggregate(total=Sum("amount"))["total"] or Decimal(0)
             
             # Step 2: Get all settlements up to and including this settlement, in order
+            # ✅ ERROR 4 FIX: Settlement ordering MUST be deterministic
+            # ORDER BY created_at, id ensures deterministic ordering even for same-second settlements
             all_settlements = Transaction.objects.filter(
                 client_exchange=client_exchange,
                 transaction_type=Transaction.TYPE_SETTLEMENT,
                 date__lte=last_settlement.date
-            ).order_by("date", "created_at")  # Order by date, then created_at for deterministic ordering
+            ).order_by("created_at", "id")  # Order by created_at, then id for deterministic ordering
             
             # Step 3: Get share percentage for capital_closed calculation
+            # 🎯 SHARE DEFINITIONS (CRITICAL FIX)
             if client_exchange.client.is_company_client:
-                total_pct = client_exchange.company_share_pct or Decimal(0)
+                # 🚨 CRITICAL: For company clients, ALWAYS use total_share_pct = 10
+                total_pct = Decimal(10)  # ALWAYS 10 for company clients
             else:
                 total_pct = client_exchange.my_share_pct or Decimal(0)
             
@@ -191,7 +244,7 @@ def get_old_balance_after_settlement(client_exchange, as_of_date=None):
                         capital_closed = (payment_amount * Decimal(100)) / total_pct
                         base_old_balance = base_old_balance + capital_closed
             
-            base_old_balance = base_old_balance.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            base_old_balance = round_capital(base_old_balance, decimals=1)  # Capital-space: old balance
         
         # 🚨 CRITICAL: Validate the recalculated base_old_balance makes sense
         # If it's negative or None, fallback to BALANCE_RECORD (for backward compatibility)
@@ -450,7 +503,7 @@ def get_old_balance(client_exchange, balance_record_date=None, balance_record_cr
                 if combined_share > 0 and combined_share_pct > 0:
                     loss_100_percent = combined_share / (combined_share_pct / Decimal(100))
                     old_balance = current_balance + loss_100_percent
-                    old_balance = old_balance.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    old_balance = round_capital(old_balance, decimals=1)  # Capital-space: old balance
             
             return old_balance
         else:
@@ -539,6 +592,9 @@ def create_loss_profit_from_balance_change(client_exchange, old_balance, new_bal
     """
     Create LOSS or PROFIT transaction from balance movement.
     
+    🔒 CRITICAL: When LOSS is detected, creates LossSnapshot with FROZEN values.
+    When PROFIT is detected, checks if active LossSnapshot exists (blocks profit if loss exists).
+    
     🔐 GOLDEN RULE: Payment ALWAYS happens ONLY on SHARE, never on full profit or full loss.
     - Client loss → client pays ONLY share
     - Client profit → you pay ONLY share
@@ -554,37 +610,92 @@ def create_loss_profit_from_balance_change(client_exchange, old_balance, new_bal
     Returns:
         Transaction object if created, None otherwise
     """
+    from core.models import LossSnapshot, ClientDailyBalance
+    from django.db import transaction as db_transaction
+    
+    # AUTO_CLOSE_THRESHOLD imported from utils.money (single source of truth)
     balance_difference = new_balance - old_balance
     
     if balance_difference < 0:
-        # LOSS: Balance decreased
+        # LOSS: Balance decreased (capital-space: use round_capital)
         loss_amount = abs(balance_difference)
-        loss_amount = loss_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        loss_amount = round_capital(loss_amount)
         
-        # Calculate shares for LOSS
-        my_share_pct = client_exchange.my_share_pct
+        # Skip if loss is below threshold
+        if loss_amount < AUTO_CLOSE_THRESHOLD:
+            return None
+        
+        # 🔒 GUARD: Check if active LossSnapshot already exists
+        existing_loss = LossSnapshot.objects.filter(
+            client_exchange=client_exchange,
+            is_settled=False
+        ).first()
+        
+        if existing_loss:
+            # Active loss exists - DO NOT create another LossSnapshot
+            # This prevents duplicate loss snapshots
+            # The existing loss should be settled first
+            return None
+        
+        # Calculate shares for LOSS (frozen at creation time)
+        my_share_pct = client_exchange.my_share_pct or Decimal(0)
+        company_share_pct = client_exchange.company_share_pct or Decimal(0)
         
         # STEP 1: Calculate TOTAL SHARE (this is what client pays)
-        # Total Share = my_share_pct% of loss (e.g., 10% of 90 = ₹9)
-        total_share = (loss_amount * my_share_pct) / Decimal(100)
-        total_share = total_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-        
-        # STEP 2: For company clients, split that share internally
         if client_exchange.client.is_company_client:
-            # My cut = 1% of loss
-            your_cut = (loss_amount * Decimal(1)) / Decimal(100)
-            your_cut = your_cut.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            
-            # Company cut = 9% of loss
-            company_cut = (loss_amount * Decimal(9)) / Decimal(100)
-            company_cut = company_cut.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            
-            # Verify: your_cut + company_cut should equal total_share
-            # (This ensures we're splitting the share, not calculating separately)
+            # For company clients, total share = company_share_pct (usually 10%)
+            total_share_pct = company_share_pct
+        else:
+            # For my clients, total share = my_share_pct (usually 10%)
+            total_share_pct = my_share_pct
+        
+        # ✅ CORRECT IMPLEMENTATION: Use calculate_share_split to prevent leakage
+        # Algorithm: Round TOTAL first → Round ONE side → Give remainder to other
+        if client_exchange.client.is_company_client:
+            # Company clients: Split share internally (1% you, 9% company)
+            my_share_pct_for_split = Decimal(1)  # 1% of loss
+            company_share_pct_for_split = Decimal(9)  # 9% of loss
+            your_cut, company_cut, total_share = calculate_share_split(
+                loss=loss_amount,
+                my_pct=my_share_pct_for_split,
+                company_pct=company_share_pct_for_split,
+            )
         else:
             # My clients: you get the full share
+            total_share_raw = (loss_amount * total_share_pct) / Decimal(100)
+            total_share = round_share(total_share_raw)  # Share-space: round DOWN
             your_cut = total_share
             company_cut = Decimal(0)
+        
+        # Get or create balance record for this date (frozen CB)
+        balance_record, _ = ClientDailyBalance.objects.get_or_create(
+            client_exchange=client_exchange,
+            date=balance_date,
+            defaults={
+                "remaining_balance": new_balance,
+                "extra_adjustment": Decimal(0),
+                "note": f"Balance record at loss creation{note_suffix}"
+            }
+        )
+        
+        # 🔒 CREATE LOSSSNAPSHOT (FROZEN values)
+        with db_transaction.atomic():
+            # Double-check guard (race condition protection)
+            if LossSnapshot.objects.filter(
+                client_exchange=client_exchange,
+                is_settled=False
+            ).exists():
+                return None  # Another process created it
+            
+            loss_snapshot = LossSnapshot.objects.create(
+                client_exchange=client_exchange,
+                balance_record=balance_record,
+                loss_amount=loss_amount,  # FROZEN
+                my_share_pct=my_share_pct,  # FROZEN
+                company_share_pct=company_share_pct,  # FROZEN
+                is_settled=False,
+                note=f"Loss snapshot created: ₹{loss_amount} (frozen){note_suffix}"
+            )
         
         # Create LOSS transaction
         # client_share_amount = Total Share (what client pays)
@@ -602,32 +713,51 @@ def create_loss_profit_from_balance_change(client_exchange, old_balance, new_bal
         )
         
     elif balance_difference > 0:
-        # PROFIT: Balance increased
+        # PROFIT: Balance increased (capital-space: use round_capital)
         profit_amount = balance_difference
-        profit_amount = profit_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        profit_amount = round_capital(profit_amount)
+        
+        # Skip if profit is below threshold
+        if profit_amount < AUTO_CLOSE_THRESHOLD:
+            return None
+        
+        # 🔒 GUARD: Block profit creation if active LossSnapshot exists
+        active_loss = LossSnapshot.objects.filter(
+            client_exchange=client_exchange,
+            is_settled=False
+        ).first()
+        
+        if active_loss:
+            # Active loss exists - PROFIT cannot be created
+            # Loss must be settled first before profit can exist
+            return None
         
         # Calculate shares for PROFIT
-        my_share_pct = client_exchange.my_share_pct
+        my_share_pct = client_exchange.my_share_pct or Decimal(0)
         
         # STEP 1: Calculate TOTAL SHARE (this is what you pay to client)
-        # Total Share = my_share_pct% of profit (e.g., 10% of 990 = ₹99)
-        total_share = (profit_amount * my_share_pct) / Decimal(100)
-        total_share = total_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-        
-        # STEP 2: For company clients, split that share internally
         if client_exchange.client.is_company_client:
-            # My cut = 1% of profit
-            your_cut = (profit_amount * Decimal(1)) / Decimal(100)
-            your_cut = your_cut.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            
-            # Company cut = 9% of profit
-            company_cut = (profit_amount * Decimal(9)) / Decimal(100)
-            company_cut = company_cut.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            
-            # Verify: your_cut + company_cut should equal total_share
-            # (This ensures we're splitting the share, not calculating separately)
+            # For company clients, total share = company_share_pct (usually 10%)
+            total_share_pct = client_exchange.company_share_pct or Decimal(0)
+        else:
+            # For my clients, total share = my_share_pct (usually 10%)
+            total_share_pct = my_share_pct
+        
+        # ✅ CORRECT IMPLEMENTATION: Use calculate_share_split to prevent leakage
+        # Algorithm: Round TOTAL first → Round ONE side → Give remainder to other
+        if client_exchange.client.is_company_client:
+            # Company clients: Split share internally (1% you, 9% company)
+            my_share_pct_for_split = Decimal(1)  # 1% of profit
+            company_share_pct_for_split = Decimal(9)  # 9% of profit
+            your_cut, company_cut, total_share = calculate_share_split(
+                loss=profit_amount,  # Note: using profit_amount as "loss" parameter (same calculation)
+                my_pct=my_share_pct_for_split,
+                company_pct=company_share_pct_for_split,
+            )
         else:
             # My clients: you pay the full share
+            total_share_raw = (profit_amount * total_share_pct) / Decimal(100)
+            total_share = round_share(total_share_raw)  # Share-space: round DOWN
             your_cut = total_share
             company_cut = Decimal(0)
         
@@ -1217,7 +1347,7 @@ def client_give_money(request, client_pk):
     if request.method == "POST":
         client_exchange_id = request.POST.get("client_exchange")
         tx_date = request.POST.get("date")
-        amount = Decimal(request.POST.get("amount", 0) or 0).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        amount = round_share(Decimal(request.POST.get("amount", 0) or 0))  # Share-space: round DOWN
         note = request.POST.get("note", "")
         
         if client_exchange_id and tx_date and amount > 0:
@@ -1280,7 +1410,13 @@ def settle_payment(request):
     if request.method == "POST":
         client_id = request.POST.get("client_id")
         client_exchange_id = request.POST.get("client_exchange_id")
-        amount = Decimal(request.POST.get("amount", 0) or 0).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        # ✅ CRITICAL RULE 5: Convert POST amount to Decimal first, then round
+        # All money values MUST be Decimal (never int or float)
+        # This prevents 'int' object has no attribute 'quantize' errors
+        # ✅ CORRECT: Always convert to Decimal via string
+        # ❌ WRONG: int(request.POST.get("amount")) or float(request.POST.get("amount"))
+        amount_raw = request.POST.get("amount", "0") or "0"
+        amount = round_share(Decimal(str(amount_raw)))  # Share-space: round DOWN
         tx_date = request.POST.get("date")
         note = request.POST.get("note", "")
         payment_type = request.POST.get("payment_type", "client_pays")  # client_pays or admin_pays_profit
@@ -1301,7 +1437,7 @@ def settle_payment(request):
         # We need to take the absolute value
         if payment_type == "admin_pays_profit":
             amount = abs(amount)  # Normalize: -5.0 becomes 5.0
-            amount = amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            amount = round_share(amount)  # Share-space: round DOWN
             # Debug print removed to prevent BrokenPipeError
         
         if client_id and client_exchange_id and amount > 0 and tx_date:
@@ -1309,368 +1445,696 @@ def settle_payment(request):
                 client = get_object_or_404(Client, pk=client_id, user=request.user)
                 client_exchange = get_object_or_404(ClientExchange, pk=client_exchange_id, client=client)
                 
-                # 🚨 FAILURE CASE 3 FIX: Use DB transaction lock for deterministic settlement ordering
+                # 🚨 CRITICAL: Use DB transaction lock for deterministic settlement ordering
                 # This ensures that multiple settlements on the same day are processed in order
                 # and prevents race conditions that could cause incorrect Old Balance calculations
+                # ✅ CRITICAL: ALL settlement logic must be INSIDE atomic block
+                # Success message must be INSIDE atomic block to ensure it only shows if DB commit succeeds
+                # ✅ CRITICAL: ALL settlement logic must be INSIDE atomic block
+                # Success message must be INSIDE atomic block to ensure it only shows if DB commit succeeds
                 with db_transaction.atomic():
                     # Lock the ClientExchange row to prevent concurrent modifications
                     locked_client_exchange = ClientExchange.objects.select_for_update().get(pk=client_exchange.pk)
-                
-                # payment_type should be either "client_pays" or "admin_pays_profit"
-                if payment_type == "client_pays":
-                    # 🔑 PARTIAL PAYMENT LOGIC (FINAL & CORRECT)
-                    # This logic works for My Clients, Company Clients, Multiple partial payments, Profit & loss cases
                     
-                    # 🧮 STEP 1: GET CURRENT STATE
-                    old_balance = get_old_balance_after_settlement(client_exchange)
-                    current_balance = get_exchange_balance(client_exchange, use_cache=False)
-                    net_profit = current_balance - old_balance
-                    abs_profit = abs(net_profit)
-                    
-                    # Get share percentages
-                    my_pct = client_exchange.my_share_pct or Decimal(0)
-                    if client_exchange.client.is_company_client:
-                        company_pct = client_exchange.company_share_pct or Decimal(0)
-                        total_pct = company_pct  # For company clients, total_pct = company_share_pct (10%)
-                    else:
-                        company_pct = Decimal(0)
-                        total_pct = my_pct  # For my clients, total_pct = my_share_pct
-                    
-                    # 🔹 STEP 2: DETECT CASE
-                    if abs(net_profit) < Decimal("0.01"):
-                        # net_profit == 0 → NO SETTLEMENT ALLOWED
-                        from django.contrib import messages
-                        from django.core.exceptions import ValidationError
-                        messages.error(request, f"Cannot record payment: No pending amount (net profit is zero).")
-                        redirect_url = f"?section=clients-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
-                    
-                    # Calculate share_amount (stateless - from net_profit)
-                    # 🚨 CRITICAL: share_amount is calculated from the CURRENT state (old_balance and current_balance)
-                    # Since settlements move Old Balance forward, share_amount already reflects all previous settlements
-                    # Therefore, share_amount IS the pending amount - we should NOT subtract settlements again
-                    share_amount = (abs_profit * total_pct) / Decimal(100)
-                    share_amount = share_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🚨 CRITICAL: Pending is simply the share_amount (stateless calculation)
-                    # Settlements are already reflected in Old Balance movement, so share_amount is already the correct pending
-                    # We do NOT need to subtract settlements_so_far because:
-                    # 1. Old Balance has been moved forward by previous settlements
-                    # 2. share_amount is recalculated from the new Old Balance
-                    # 3. Therefore, share_amount = current pending amount
-                    pending_before = share_amount
-                    # 🚨 CRITICAL: Do NOT clamp pending_before to 0 here - we need the signed value for validation
-                    # For loss: pending_before > 0 (client owes you)
-                    # For profit: pending_before would be negative (you owe client), but we're in "client_pays" so it should be loss
-                    
-                    # 🔒 HARD SAFETY RULES (MANDATORY - NO EXCEPTIONS)
-                    # Rule 1: Never allow settlement if pending <= 0 (MANDATORY - blocks multiple payments bug)
-                    if pending_before <= Decimal("0.01"):
-                        from django.contrib import messages
-                        messages.error(request, f"Cannot record payment: No pending amount to settle (pending: ₹{pending_before}).")
-                        redirect_url = f"?section=clients-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
-                    
-                    # Rule 2: Never allow settlement > pending (MANDATORY)
-                    if amount > pending_before:
-                        from django.contrib import messages
-                        messages.error(request, f"Cannot record payment: Amount ₹{amount} exceeds pending amount ₹{pending_before}.")
-                        redirect_url = f"?section=clients-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
-                    
-                    # Rule 3: Lock settlement direction (MANDATORY - prevents profit/loss flipping)
-                    # For "client_pays", we must be in LOSS case (net_profit < 0)
-                    if net_profit >= 0:
-                        from django.contrib import messages
-                        messages.error(request, f"Cannot record client payment: Client is in profit (net_profit: ₹{net_profit}). Use 'Pay Client' instead.")
-                        redirect_url = f"?section=you-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
-                    
-                    # 🔹 STEP 3: CONVERT PAYMENT → CAPITAL CLOSED
-                    # 📘 Settlement Logic: capital_closed = payment × 100 / share_pct
-                    # For my clients: share_pct = my_share_pct (e.g., 10%)
-                    # For company clients: share_pct = company_share_pct (e.g., 10%)
-                    # 
-                    # Example: Payment ₹8.5, share_pct = 10%
-                    # capital_closed = 8.5 × 100 / 10 = 85
-                    capital_closed = (amount * Decimal(100)) / total_pct
-                    
-                    capital_closed = capital_closed.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🔹 STEP 4: UPDATE OLD BALANCE
-                    # 📘 LOSS Case (NET < 0): OB_new = OB - capital_closed
-                    # 📘 Clamp Rule: OB_new = max(OB_new, CB)
-                    # Old Balance moves TOWARDS Current Balance, but never crosses it
-                    # This ensures Old Balance never goes below Current Balance (which would create fake profit)
-                    old_balance_new = old_balance - capital_closed
-                    old_balance_new = old_balance_new.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🔒 CRITICAL SAFETY CHECK: Old Balance must NEVER cross Current Balance
-                    # If Old Balance would cross Current Balance, clamp it to Current Balance
-                    if old_balance_new < current_balance:
-                        old_balance_new = current_balance
-                        # Note: This will result in pending_new = 0, which triggers closure rule
-                    
-                    # 🔹 STEP 5: CURRENT BALANCE NEVER CHANGES (already set above)
-                    
-                    # 🔹 STEP 6: RECALCULATE NET (AFTER SETTLEMENT)
-                    # 📘 NET_new = CB - OB_new
-                    net_new = current_balance - old_balance_new
-                    movement_new = abs(net_new)
-                    
-                    # 🔹 STEP 7: RECALCULATE SHARE (STATELESS)
-                    # 📘 Share Calculation: share_new = movement_new × share_pct / 100
-                    share_new = (movement_new * total_pct) / Decimal(100)
-                    share_new = share_new.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🔹 STEP 8: RECALCULATE PENDING (STATELESS)
-                    # 📘 Pending = Share Amount (CRITICAL RULE)
-                    # Settlement is already reflected by moving Old Balance
-                    # So pending is simply the new share amount - DO NOT subtract settlement again
-                    pending_new = share_new
-                    pending_new = max(Decimal(0), pending_new)
-                    
-                    # 🔒 CLOSURE RULE (Hard Stop)
-                    # 📘 If pending_new <= 0.01: OB_new = CB, pending_new = 0
-                    # Client must disappear from pending list
-                    if pending_new <= Decimal("0.01"):
-                        old_balance_new = current_balance
-                        pending_new = Decimal(0)
-                    
-                    # 🚨 CRITICAL FIX: Store Old Balance in ClientExchange, NOT as BALANCE_RECORD
-                    # BALANCE_RECORD should ONLY contain exchange reality (actual balance), not virtual Old Balance
-                    # This prevents multiple same-day payments from creating conflicting BALANCE_RECORDs
-                    settlement_date = datetime.strptime(tx_date, "%Y-%m-%d").date()
-                    
-                    # Update cached_old_balance in ClientExchange (this is the source of truth)
-                    # 🚨 CRITICAL: Use locked_client_exchange to ensure atomic update
-                    locked_client_exchange.cached_old_balance = old_balance_new
-                    locked_client_exchange.balance_last_updated = timezone.now()
-                    locked_client_exchange.save(update_fields=['cached_old_balance', 'balance_last_updated'])
-                    
-                    # DO NOT create a BALANCE_RECORD for settlement adjustments
-                    # BALANCE_RECORDs should ONLY be created for actual exchange balance changes
-                    # Old Balance is stored in ClientExchange.cached_old_balance
-                    
-                    # Calculate share breakdown for transaction
-                    if locked_client_exchange.client.is_company_client:
-                        # Company clients: Split payment between my share (1%) and company share (9%)
-                        my_share_amount = (amount * Decimal(1)) / total_pct  # 1% of payment
-                        my_share_amount = my_share_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                        company_share_amount = amount - my_share_amount  # Remaining goes to company
-                        company_share_amount = company_share_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    else:
-                        # My clients: Full payment goes to my share
-                        my_share_amount = amount
-                        company_share_amount = Decimal(0)
+                    # payment_type should be either "client_pays" or "admin_pays_profit"
+                    if payment_type == "client_pays":
+                        # 🔑 PARTIAL PAYMENT LOGIC (FROZEN LOSS APPROACH)
+                        # Uses frozen Loss from LossSnapshot - NEVER recalculated
                         
-                    # Update ledgers
-                    if not locked_client_exchange.client.is_company_client:
-                        # My Clients: Update Outstanding
-                        outstanding, _ = OutstandingAmount.objects.get_or_create(
-                            client_exchange=locked_client_exchange,
-                            defaults={"outstanding_amount": Decimal(0)}
+                        # 🚨 CRITICAL: Use frozen Loss from LossSnapshot
+                        # Get active loss snapshot (FROZEN values)
+                        try:
+                            loss_snapshot = LossSnapshot.objects.get(
+                                client_exchange=locked_client_exchange,
+                                is_settled=False
+                            )
+                        except LossSnapshot.DoesNotExist:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: No active loss to settle.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # 🧮 STEP 1: GET FROZEN STATE (from LossSnapshot)
+                        # ✅ CRITICAL: Convert ALL values to Decimal immediately (prevents int/float mixing)
+                        # LOSS is FROZEN - original loss is immutable
+                        original_loss = Decimal(str(loss_snapshot.loss_amount))  # FROZEN (immutable) - ensure Decimal
+                        # Remaining loss is DERIVED from settlements, not stored
+                        loss_current = loss_snapshot.get_remaining_loss()  # DERIVED (already Decimal from get_remaining_loss)
+                        loss_current = Decimal(str(loss_current))  # ✅ Ensure Decimal
+                    
+                        # CB is FROZEN when loss exists
+                        current_balance = Decimal(str(loss_snapshot.balance_record.remaining_balance))  # FROZEN - ensure Decimal
+                    
+                        # CAPITAL is DERIVED from frozen values
+                        old_balance = current_balance + loss_current  # DERIVED: CAPITAL = CB + LOSS
+                    
+                        # ✅ FIX: Initialize profit_current unconditionally (prevents UnboundLocalError)
+                        # Profit can ONLY exist when loss is fully settled (loss_current = 0)
+                        profit_current = Decimal("0")  # Default: no profit when loss exists
+                    
+                        # ✅ FIX: Initialize epsilon unconditionally (prevents UnboundLocalError)
+                        # Use AUTO_CLOSE_THRESHOLD for consistency (capital-space precision)
+                        epsilon = AUTO_CLOSE_THRESHOLD  # Default: 0.01 for capital-space comparisons
+                    
+                        # Only calculate profit if loss is fully settled
+                        if loss_current < AUTO_CLOSE_THRESHOLD:
+                            # Loss is fully settled - profit can now exist
+                            profit_current = max(current_balance - old_balance, Decimal("0"))
+                            profit_current = round_capital(profit_current)  # Capital-space: ROUND_HALF_UP
+                    
+                        # 🎯 SHARE DEFINITIONS (from FROZEN LossSnapshot)
+                        # ✅ CRITICAL: Convert ALL share percentages to Decimal (prevents int mixing)
+                        # Share percentages are FROZEN at loss creation time
+                        my_share_pct_effective = Decimal(str(loss_snapshot.my_share_pct))  # FROZEN - ensure Decimal
+                        company_share_pct = Decimal(str(loss_snapshot.company_share_pct))  # FROZEN - ensure Decimal
+                    
+                        # Calculate total share percentage (ensure Decimal)
+                        if locked_client_exchange.client.is_company_client:
+                            total_pct = my_share_pct_effective + company_share_pct  # Usually 1% + 9% = 10%
+                        else:
+                            total_pct = my_share_pct_effective  # Usually 10%
+                        total_pct = Decimal(str(total_pct))  # ✅ Ensure Decimal
+                    
+                        # AUTO_CLOSE_THRESHOLD imported from utils.money
+                    
+                        # 🔹 STEP 2: VALIDATE
+                        # Validate: REJECT if payment <= 0
+                        if amount <= Decimal(0):
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Amount must be greater than zero.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ CRITICAL RULE 3: Validate against RAW pending, not rounded
+                        # In a rounding-down system, raw pending may be higher than displayed pending
+                        # Example: remaining_loss=905, total_pct=10% → raw=90.5, display=90.0
+                        # User should be able to pay up to 90.5, not blocked at 90.0
+                        pending_raw = (loss_current * total_pct) / Decimal(100)
+                        pending_display = round_share(pending_raw)  # For display only
+                    
+                        # ✅ CRITICAL RULE 3: Validate payment against RAW pending (prevents blocking valid payments)
+                        # amount ≤ RAW pending (before rounding), NOT rounded pending
+                        if amount > pending_raw:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Payment (₹{amount}) exceeds pending amount (₹{pending_display}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 1 FIX: Explicitly block settlement when LOSS = 0
+                        if loss_current < AUTO_CLOSE_THRESHOLD:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: No loss to settle (LOSS: ₹{loss_current}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 3 FIX: Prevent division by zero
+                        if total_pct <= 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Invalid share percentage (total_share_pct: {total_pct}%). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # 🔹 STEP 3: CONVERT PAYMENT TO CAPITAL CLOSED
+                        # ✅ ERROR 2 FIX: Validate raw capital_closed BEFORE rounding
+                        capital_closed_raw = (amount * Decimal(100)) / total_pct
+                    
+                        # ✅ ERROR 4 FIX: Strict upper bound - capital_closed cannot exceed LOSS
+                        if capital_closed_raw > loss_current:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Capital closed (₹{capital_closed_raw}) exceeds loss (₹{loss_current}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ Round AFTER validation (capital-space: use round_capital)
+                        capital_closed = round_capital(capital_closed_raw)
+                    
+                        # ✅ LOSS-FIRST: Reduce FROZEN LOSS, then re-derive CAPITAL
+                        loss_new = loss_current - capital_closed
+                    
+                        # ✅ ERROR 5 FIX: Guard against negative LOSS_new
+                        if loss_new < 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Settlement would create negative loss (LOSS_new: ₹{loss_new}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # Clamp to zero (should not be needed after above check, but safety)
+                        loss_new = max(loss_new, 0)
+                    
+                        # ✅ Round loss (capital-space: use round_capital)
+                        loss_new = round_capital(loss_new)
+                    
+                        # Auto-close if below threshold
+                        if loss_new < AUTO_CLOSE_THRESHOLD:
+                            loss_new = Decimal(0)
+                            loss_snapshot.is_settled = True
+                    
+                        # 🔹 STEP 4: RE-DERIVE CAPITAL (from frozen CB + updated Loss)
+                        # CAPITAL is ALWAYS derived: CAPITAL = CB + LOSS
+                        if loss_new >= AUTO_CLOSE_THRESHOLD:
+                            # Partial settlement: CAPITAL = CB (frozen) + LOSS (updated)
+                            old_balance_new = current_balance + loss_new
+                        else:
+                            # Full settlement: CAPITAL = CB (frozen)
+                            old_balance_new = current_balance
+                            loss_new = Decimal(0)
+                    
+                        # ✅ ERROR 14 FIX: Post-settlement invariant checks
+                        if old_balance_new < 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Old Balance would become negative (₹{old_balance_new}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 14 FIX: Assert CAPITAL_new >= CB (LOSS settlement invariant)
+                        if old_balance_new < current_balance:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Settlement invariant violation (CAPITAL: ₹{old_balance_new} < CB: ₹{current_balance}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 14 FIX: Assert LOSS_new == CAPITAL_new - CB (invariant)
+                        loss_verify = old_balance_new - current_balance
+                        if abs(loss_new - loss_verify) > AUTO_CLOSE_THRESHOLD:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Loss invariant violation (LOSS: ₹{loss_new} != CAPITAL - CB: ₹{loss_verify}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ INVARIANT CHECK: Assert CAPITAL == CB + LOSS after settlement
+                        capital_verify = current_balance + loss_new
+                        if abs(old_balance_new - capital_verify) > AUTO_CLOSE_THRESHOLD:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Capital invariant violation (CAPITAL: ₹{old_balance_new} != CB + LOSS: ₹{capital_verify}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 1 FIX: Explicitly block settlement when LOSS = 0
+                        if loss_current == 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: No loss to settle (LOSS: ₹{loss_current}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 15 FIX: Block LOSS settlement when PROFIT exists
+                        if profit_current > 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record loss settlement: Client is in profit (PROFIT: ₹{profit_current}). Use profit withdrawal instead.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 3 FIX: Prevent division by zero
+                        if total_pct <= 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Invalid share percentage (total_share_pct: {total_pct}%). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 2 FIX: Validate raw capital_closed BEFORE rounding
+                        # This prevents false rejections due to rounding
+                        capital_closed_raw = (amount * Decimal(100)) / total_pct
+                    
+                        # ✅ ERROR 4 FIX: Strict upper bound - capital_closed cannot exceed LOSS
+                        if capital_closed_raw > loss_current:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Capital closed (₹{capital_closed_raw}) exceeds loss (₹{loss_current}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ Round AFTER validation (capital-space: use round_capital)
+                        capital_closed = round_capital(capital_closed_raw)
+                    
+                        # ✅ ERROR 4 FIX: Lock CB snapshot - use current_balance captured at start of transaction
+                        # CB must not change during settlement (already locked via select_for_update)
+                        cb_snapshot = current_balance  # Use this for all calculations
+                    
+                        # ✅ CRITICAL FIX: Calculate share breakdown BEFORE creating transaction
+                        # This ensures we have the correct split for the transaction record
+                        if locked_client_exchange.client.is_company_client:
+                            # Company clients: Split payment between my share (1%) and company share (9%)
+                            # For payment amount, split proportionally based on percentages
+                            my_share_amount_raw = (amount * my_share_pct_effective) / total_pct
+                            my_share_amount = round_share(my_share_amount_raw)  # Round DOWN
+                            # Give remainder to company (NO rounding) to prevent leakage
+                            company_share_amount = amount - my_share_amount  # Total always equals amount
+                        else:
+                            # My clients: Full payment goes to my share
+                            my_share_amount = round_share(amount)  # Round DOWN
+                            company_share_amount = Decimal(0)
+                    
+                        # 🚨 CRITICAL FIX: Create SETTLEMENT transaction FIRST
+                        # This is the ONLY way to persist the settlement
+                        # After this, get_remaining_loss() will include this transaction
+                        settlement_date = datetime.strptime(tx_date, "%Y-%m-%d").date()
+                    
+                        # Calculate pending_before for note (share-space: round DOWN)
+                        pending_before_raw = (loss_current * total_pct) / Decimal(100)
+                        pending_before = round_share(pending_before_raw)  # Round DOWN
+                    
+                        note_text = note or (
+                            f"Share settlement: ₹{amount} (capital_closed: ₹{capital_closed}). "
+                            f"Original Trading Loss: ₹{original_loss} (immutable). "
+                            f"Capital closed: ₹{capital_closed}."
                         )
-                        outstanding.outstanding_amount = pending_new
-                        outstanding.save()
-                    else:
-                        # Company Clients: Update TallyLedger
-                        from core.models import TallyLedger
-                        tally, _ = TallyLedger.objects.get_or_create(
-                            client_exchange=locked_client_exchange,
-                            defaults={
-                                "client_owes_you": Decimal(0),
-                                "company_owes_you": Decimal(0),
-                                "you_owe_client": Decimal(0),
-                                "you_owe_company": Decimal(0),
-                            }
+                    
+                        if not locked_client_exchange.client.is_company_client:
+                            # MY CLIENTS: Admin receives payment directly
+                            transaction = Transaction.objects.create(
+                                client_exchange=locked_client_exchange,
+                                date=settlement_date,
+                                transaction_type=Transaction.TYPE_SETTLEMENT,
+                                amount=amount,
+                                capital_closed=capital_closed,  # Audit trail: capital closed by this settlement
+                                client_share_amount=Decimal(0),  # Client pays
+                                your_share_amount=my_share_amount,  # Admin receives My Share
+                                company_share_amount=Decimal(0),  # No company share for my clients
+                                note=note_text,
+                            )
+                        else:
+                            # COMPANY CLIENTS: Company receives payment from client
+                            transaction = Transaction.objects.create(
+                                client_exchange=locked_client_exchange,
+                                date=settlement_date,
+                                transaction_type=Transaction.TYPE_SETTLEMENT,
+                                amount=amount,
+                                capital_closed=capital_closed,  # Audit trail: capital closed by this settlement
+                                client_share_amount=Decimal(0),  # Client pays
+                                your_share_amount=my_share_amount,  # Your 1% cut
+                                company_share_amount=company_share_amount,  # Company receives 9%
+                                note=note_text,
+                            )
+                    
+                        # ✅ CRITICAL FIX: NOW recalculate remaining_loss from database
+                        # get_remaining_loss() queries SETTLEMENT transactions, so it now includes our new transaction
+                        loss_before = loss_current  # Store for debug
+                        remaining_loss = loss_snapshot.get_remaining_loss()
+                        remaining_loss = round_capital(remaining_loss)  # Round capital-space
+                    
+                        # 🧪 DEBUG: Log settlement details (can be removed in production)
+                        # print(f"SETTLEMENT DEBUG: LOSS BEFORE: {loss_before}, CAPITAL CLOSED: {capital_closed}, LOSS AFTER: {remaining_loss}, TOTAL %: {total_pct}, PENDING: {round_share(remaining_loss * total_pct / Decimal(100))}")
+                    
+                        # ✅ ERROR 5 FIX: Guard against negative remaining_loss (should never happen, but safety check)
+                        if remaining_loss < 0:
+                            remaining_loss = Decimal(0)
+                    
+                        # ✅ CRITICAL RULE 4: Mark LossSnapshot as settled ONLY if remaining_loss is effectively zero
+                        # This is the ONLY place is_settled should be set
+                        # If is_settled=True too early:
+                        #   - Pending instantly becomes ₹0
+                        #   - Settlement button breaks
+                        #   - System says "No loss to settle"
+                        if remaining_loss <= AUTO_CLOSE_THRESHOLD:
+                            loss_snapshot.is_settled = True
+                            loss_snapshot.save(update_fields=['is_settled'])
+                            remaining_loss = Decimal(0)  # Normalize to zero
+                        else:
+                            # ✅ CRITICAL RULE 4: MUST remain False if loss still exists
+                            # Do NOT set is_settled = True here - it will break partial payments
+                            if loss_snapshot.is_settled:
+                                # Safety check: if somehow already set, unset it
+                                loss_snapshot.is_settled = False
+                                loss_snapshot.save(update_fields=['is_settled'])
+                    
+                        # ✅ CRITICAL FIX: Derive CAPITAL from CB + remaining_loss
+                        # CAPITAL is ALWAYS derived: CAPITAL = CB + LOSS
+                        if remaining_loss > epsilon:
+                            # LOSS exists: CAPITAL = CB + LOSS
+                            old_balance_new = cb_snapshot + remaining_loss
+                        else:
+                            # Full settlement: CAPITAL = CB
+                            old_balance_new = cb_snapshot
+                    
+                        # ✅ ERROR 6 FIX: Normalize CAPITAL only when LOSS is also zero (prevent erasing valid LOSS)
+                        if old_balance_new < epsilon and remaining_loss == 0:
+                            old_balance_new = Decimal(0)
+                    
+                        # ✅ ERROR 2 FIX: Simple direction flip check (LOSS settlement must not create profit)
+                        # ✅ ERROR 4 FIX: Use CB snapshot for validation
+                        # If LOSS still exists → CAPITAL must stay ≥ CB
+                        # If LOSS becomes 0 → settlement is complete, flip allowed
+                        if remaining_loss > epsilon and old_balance_new < cb_snapshot:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Settlement would create profit while loss still exists (LOSS: ₹{remaining_loss}, CAPITAL: ₹{old_balance_new}, CB: ₹{current_balance}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 14 FIX: Post-settlement invariant checks
+                        if old_balance_new < 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Old Balance would become negative (₹{old_balance_new}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 14 FIX: Assert CAPITAL_new >= CB (LOSS settlement invariant)
+                        if old_balance_new < cb_snapshot:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Settlement invariant violation (CAPITAL: ₹{old_balance_new} < CB: ₹{cb_snapshot}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 14 FIX: Assert remaining_loss == CAPITAL_new - CB
+                        loss_verify = old_balance_new - cb_snapshot
+                        if abs(remaining_loss - loss_verify) > epsilon:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot record payment: Loss invariant violation (LOSS: ₹{remaining_loss} != CAPITAL - CB: ₹{loss_verify}). System error - please contact support.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # 🔹 STEP 4: FINALIZE
+                        # ✅ ERROR 7 FIX: Use defined epsilon for precision
+                        # If abs(CB - OB_new) < epsilon, set OB_new = CB (settled completely)
+                        if abs(current_balance - old_balance_new) < epsilon:
+                            old_balance_new = current_balance
+                    
+                        # ✅ CRITICAL RULE 1 & 2: Derive PENDING from REMAINING LOSS (NEVER from payment)
+                        # Pending is ALWAYS calculated from remaining loss, NEVER from payment amount
+                        # ❌ WRONG: pending = pending_before - payment_amount
+                        # ✅ CORRECT: pending = round_share(remaining_loss * total_pct / 100)
+                        # This ensures pending is always accurate and never shows ₹0 when loss still exists
+                        if remaining_loss >= AUTO_CLOSE_THRESHOLD:
+                            # ✅ CORRECT IMPLEMENTATION: Use calculate_share_split to prevent leakage
+                            # This ensures: my_share + company_share == total_payable (ALWAYS)
+                            if locked_client_exchange.client.is_company_client:
+                                my_share_from_loss, company_share_from_loss, client_payable = calculate_share_split(
+                                    loss=remaining_loss,
+                                    my_pct=my_share_pct_effective,
+                                    company_pct=company_share_pct,
+                                )
+                                your_receivable = my_share_from_loss
+                                company_receivable = company_share_from_loss
+                            else:
+                                # My clients: total share = my share
+                                client_payable_raw = (remaining_loss * total_pct) / Decimal(100)
+                                client_payable = round_share(client_payable_raw)  # Round DOWN
+                                your_receivable = client_payable
+                                company_receivable = Decimal(0)
+                        
+                            pending_new = client_payable
+                        else:
+                            # Fully settled
+                            pending_new = Decimal(0)
+                            your_receivable = Decimal(0)
+                            company_receivable = Decimal(0)
+                    
+                        # 🚨 CRITICAL FIX: Store Old Balance in ClientExchange, NOT as BALANCE_RECORD
+                        # BALANCE_RECORD should ONLY contain exchange reality (actual balance), not virtual Old Balance
+                        # This prevents multiple same-day payments from creating conflicting BALANCE_RECORDs
+                    
+                        # Update cached_old_balance in ClientExchange (DISPLAY CACHE, not source of truth)
+                        # ✅ FIX ISSUE 5: cached_old_balance is a performance cache, ledger is source of truth
+                        # 🚨 CRITICAL: Use locked_client_exchange to ensure atomic update
+                        locked_client_exchange.cached_old_balance = old_balance_new
+                        locked_client_exchange.balance_last_updated = timezone.now()
+                        locked_client_exchange.save(update_fields=['cached_old_balance', 'balance_last_updated'])
+                    
+                        # DO NOT create a BALANCE_RECORD for settlement adjustments
+                        # BALANCE_RECORDs should ONLY be created for actual exchange balance changes
+                        # Old Balance is stored in ClientExchange.cached_old_balance
+                        
+                        # Update ledgers
+                        # ✅ CRITICAL RULE 1 & 2: Ledger must use pending_new (derived from remaining_loss), NOT subtract payment
+                        # ❌ WRONG: ledger_value = ledger_value - amount
+                        # ✅ CORRECT: ledger_value = pending_new (pending_new is derived from remaining_loss)
+                        if not locked_client_exchange.client.is_company_client:
+                            # My Clients: Update Outstanding
+                            outstanding, _ = OutstandingAmount.objects.get_or_create(
+                                client_exchange=locked_client_exchange,
+                                defaults={"outstanding_amount": Decimal(0)}
+                            )
+                            # ✅ CRITICAL RULE 1 & 2: Set to pending_new (derived from remaining_loss), NOT subtract payment
+                            outstanding.outstanding_amount = pending_new
+                            outstanding.save()
+                        else:
+                            # Company Clients: Update TallyLedger
+                            # ✅ CRITICAL RULE 1 & 2: Set client_owes_you to pending_new (derived from remaining_loss)
+                            # DO NOT subtract payment - pending_new is already correct from remaining_loss
+                            from core.models import TallyLedger
+                            tally, _ = TallyLedger.objects.get_or_create(
+                                client_exchange=locked_client_exchange,
+                                defaults={
+                                    "client_owes_you": Decimal(0),
+                                    "company_owes_you": Decimal(0),
+                                    "you_owe_client": Decimal(0),
+                                    "you_owe_company": Decimal(0),
+                                }
+                            )
+                            # ✅ CRITICAL RULE 1 & 2: Set to pending_new (derived from remaining_loss), NOT subtract payment
+                            # ❌ WRONG: tally.client_owes_you = tally.client_owes_you - amount
+                            # ✅ CORRECT: tally.client_owes_you = pending_new (pending_new is derived from remaining_loss)
+                            tally.client_owes_you = pending_new
+                            tally.save()
+                    
+                        # Update transaction note with final values
+                        note_text = note or (
+                            f"Share settlement: ₹{amount} (capital_closed: ₹{capital_closed}). "
+                            f"Original Trading Loss: ₹{original_loss} (immutable). "
+                            f"Remaining Trading Loss: ₹{remaining_loss} (derived from database). "
+                            f"Old Balance: ₹{old_balance} → ₹{old_balance_new} (derived). "
+                            f"Client Payable: ₹{pending_before} → ₹{pending_new}"
                         )
-                        # Reduce client_owes_you by payment amount
-                        tally.client_owes_you = max(Decimal(0), tally.client_owes_you - amount)
-                        tally.save()
-                    
-                    # Create SETTLEMENT transaction with detailed note
-                    note_text = note or (
-                        f"Partial payment: ₹{amount} (capital_closed: ₹{capital_closed}). "
-                        f"Old Balance: ₹{old_balance} → ₹{old_balance_new}. "
-                        f"Pending: ₹{pending_before} → ₹{pending_new}"
-                    )
-                    
-                    if not locked_client_exchange.client.is_company_client:
-                        # MY CLIENTS: Admin receives payment directly
-                        transaction = Transaction.objects.create(
-                            client_exchange=locked_client_exchange,
-                            date=settlement_date,
-                            transaction_type=Transaction.TYPE_SETTLEMENT,
-                            amount=amount,
-                            client_share_amount=Decimal(0),  # Client pays
-                            your_share_amount=my_share_amount,  # Admin receives My Share
-                            company_share_amount=Decimal(0),  # No company share for my clients
-                            note=note_text,
-                        )
-                        success_msg = f"Payment of ₹{amount} recorded for {client.name} - {locked_client_exchange.exchange.name}. Remaining pending: ₹{pending_new}"
-                    else:
-                        # COMPANY CLIENTS: Company receives payment from client
-                        transaction = Transaction.objects.create(
-                            client_exchange=locked_client_exchange,
-                            date=settlement_date,
-                            transaction_type=Transaction.TYPE_SETTLEMENT,
-                            amount=amount,
-                            client_share_amount=Decimal(0),  # Client pays
-                            your_share_amount=my_share_amount,  # Your 1% cut
-                            company_share_amount=company_share_amount,  # Company receives 9%
-                            note=note_text,
-                        )
-                        success_msg = f"Company payment of ₹{amount} recorded for {client.name} - {client_exchange.exchange.name}. Your share (1%): ₹{my_share_amount}. Remaining pending: ₹{pending_new}"
-                    
-                    from django.contrib import messages
-                    messages.success(request, success_msg)
-                    
-                    # Ensure session is saved before redirect
-                    request.session.modified = True
-                    
-                    redirect_url = f"?section=clients-owe&report_type={report_type}"
-                    if client_type_filter and client_type_filter != 'all':
-                        redirect_url += f"&client_type={client_type_filter}"
-                    return redirect(reverse("pending:summary") + redirect_url)
-                elif payment_type == "admin_pays_profit":
-                    # 📘 PROFIT SETTLEMENT (Company/Admin Pays Client)
-                    # 
-                    # 🚨 CRITICAL: Profit settlements MUST move Old Balance, just like loss settlements
-                    # The difference is the direction: LOSS → OB decreases, PROFIT → OB increases
-                    # 
-                    # 🔑 PARTIAL PAYMENT LOGIC FOR PROFIT (SAME AS LOSS, BUT OPPOSITE DIRECTION)
-                    # Use locked_client_exchange for consistency
-                    
-                    # 🧮 STEP 1: GET CURRENT STATE
-                    old_balance = get_old_balance_after_settlement(locked_client_exchange)
-                    current_balance = get_exchange_balance(locked_client_exchange, use_cache=False)
-                    net_profit = current_balance - old_balance
-                    abs_profit = abs(net_profit)
-                    
-                    # Get share percentages
-                    my_pct = locked_client_exchange.my_share_pct or Decimal(0)
-                    if locked_client_exchange.client.is_company_client:
-                        company_pct = locked_client_exchange.company_share_pct or Decimal(0)
-                        total_pct = company_pct  # For company clients, total_pct = company_share_pct (10%)
-                    else:
-                        company_pct = Decimal(0)
-                        total_pct = my_pct  # For my clients, total_pct = my_share_pct
-                    
-                    # 🔹 STEP 2: VALIDATE PROFIT CASE
-                    # 🚨 FAILURE CASE 5 FIX: Strengthen validation for profit case
-                    if net_profit <= Decimal("0.01"):
-                        # net_profit <= 0 → NO PROFIT SETTLEMENT ALLOWED
+                        transaction.note = note_text
+                        transaction.save(update_fields=['note'])
+                        
+                        # ✅ CRITICAL FIX: Verify settlement actually worked by re-reading from DB
+                        # This ensures we never show success message if settlement failed silently
+                        # Re-read remaining_loss from database to verify transaction was created and counted
+                        remaining_loss_after = loss_snapshot.get_remaining_loss()
+                        remaining_loss_after = Decimal(str(remaining_loss_after))  # Ensure Decimal
+                        
+                        # ✅ VERIFICATION: Loss must have decreased (or be zero if fully settled)
+                        if remaining_loss_after > loss_current:
+                            # Settlement failed - loss increased (should never happen)
+                            raise RuntimeError(f"Settlement verification failed: Loss increased from ₹{loss_current} to ₹{remaining_loss_after}. Transaction may not have been created correctly.")
+                        
+                        # ✅ VERIFICATION: If loss didn't decrease, settlement didn't work
+                        if remaining_loss_after >= loss_current and remaining_loss_after > AUTO_CLOSE_THRESHOLD:
+                            raise RuntimeError(f"Settlement verification failed: Loss did not decrease (before: ₹{loss_current}, after: ₹{remaining_loss_after}). Transaction may not have been created or date is missing.")
+                        
+                        # ✅ CRITICAL: Success message ONLY after DB verification passes
+                        # This ensures message only appears if settlement actually worked
+                        if not locked_client_exchange.client.is_company_client:
+                            success_msg = f"Payment of ₹{amount} recorded for {client.name} - {locked_client_exchange.exchange.name}. Remaining pending: ₹{pending_new}"
+                        else:
+                            success_msg = f"Company payment of ₹{amount} recorded for {client.name} - {client_exchange.exchange.name}. Your share (1%): ₹{my_share_amount}. Remaining pending: ₹{pending_new}"
+                        
                         from django.contrib import messages
-                        messages.error(request, f"Cannot record profit payment: Client is not in profit (net_profit: ₹{net_profit}). Use 'Client Pays' instead.")
+                        messages.success(request, success_msg)
+                    
+                        # Ensure session is saved before redirect
+                        request.session.modified = True
+                    
+                        redirect_url = f"?section=clients-owe&report_type={report_type}"
+                        if client_type_filter and client_type_filter != 'all':
+                            redirect_url += f"&client_type={client_type_filter}"
+                        return redirect(reverse("pending:summary") + redirect_url)
+                    elif payment_type == "admin_pays_profit":
+                            # ✅ ERROR 2 FIX: Separate PROFIT withdrawal flow (must not mix with LOSS settlement)
+                            # 📘 PROFIT SETTLEMENT (Company/Admin Pays Client)
+                            # 
+                            # 🚨 CRITICAL: Profit withdrawals affect ONLY CB, never CAPITAL
+                            # 
+                            # 🔑 PARTIAL PAYMENT LOGIC FOR PROFIT (SEPARATE FROM LOSS)
+                            # Use locked_client_exchange for consistency
+                        
+                            # 🧮 STEP 1: GET CURRENT STATE
+                        old_balance = get_old_balance_after_settlement(locked_client_exchange)
+                        current_balance = get_exchange_balance(locked_client_exchange, use_cache=False)
+                        net = current_balance - old_balance  # NET = CB - OB
+                        movement = abs(net)  # movement = |NET|
+                    
+                        # ✅ FIX: Initialize epsilon unconditionally (prevents UnboundLocalError)
+                        # Use a smaller epsilon for profit comparisons (0.0001 for precision)
+                        epsilon = Decimal("0.0001")  # For profit-space comparisons
+                    
+                        # Calculate PROFIT (not LOSS)
+                        profit_current = max(current_balance - old_balance, 0)
+                        loss_current = max(old_balance - current_balance, 0)
+                    
+                        # ✅ ERROR 1 FIX: Block profit withdrawal when PROFIT = 0
+                        if profit_current == 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot withdraw profit: No profit to withdraw (PROFIT: ₹{profit_current}).")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # ✅ ERROR 2 FIX: Block profit withdrawal when LOSS exists
+                        if loss_current > 0:
+                            from django.contrib import messages
+                            messages.error(request, f"Cannot withdraw profit: Client has loss (LOSS: ₹{loss_current}). Settle loss first.")
+                            redirect_url = f"?section=clients-owe&report_type={report_type}"
+                            if client_type_filter and client_type_filter != 'all':
+                                redirect_url += f"&client_type={client_type_filter}"
+                            return redirect(reverse("pending:summary") + redirect_url)
+                    
+                        # 🎯 SHARE DEFINITIONS (CRITICAL FIX)
+                        my_pct = locked_client_exchange.my_share_pct or Decimal(0)
+                        if locked_client_exchange.client.is_company_client:
+                            # 🚨 CRITICAL: For company clients, ALWAYS use total_share_pct = 10
+                            total_pct = Decimal(10)  # ALWAYS 10 for company clients
+                            my_share_pct_effective = Decimal(1)  # you pay 1%
+                            company_share_pct = Decimal(9)  # company pays 9%
+                    else:
+                        # My clients: use my_share_pct
+                        total_pct = my_pct  # usually 10
+                        my_share_pct_effective = my_pct  # you pay full share
+                        company_share_pct = Decimal(0)
+                    
+                    # 🔹 STEP 2: VALIDATE (NO pending math here)
+                    if movement < Decimal("0.01"):
+                        # NET == 0 → NO SETTLEMENT ALLOWED
+                        from django.contrib import messages
+                        messages.error(request, f"Cannot record profit payment: No movement (NET is zero).")
+                        redirect_url = f"?section=you-owe&report_type={report_type}"
+                        if client_type_filter and client_type_filter != 'all':
+                            redirect_url += f"&client_type={client_type_filter}"
+                        return redirect(reverse("pending:summary") + redirect_url)
+                    
+                    # Calculate capital_closed for validation (capital-space: use round_capital)
+                    capital_closed_raw = (amount * Decimal(100)) / total_pct
+                    capital_closed = round_capital(capital_closed_raw, decimals=1)  # Profit withdrawal uses 1 decimal
+                    
+                    # ✅ ERROR 3 FIX: Validate against PROFIT, not movement
+                    # movement includes loss cases, but we're settling PROFIT only
+                    # Note: epsilon already initialized at top of admin_pays_profit branch
+                    profit_current = max(current_balance - old_balance, 0)
+                    
+                    if profit_current <= epsilon:
+                        from django.contrib import messages
+                        messages.error(request, f"Cannot record profit payment: No profit to settle (PROFIT: ₹{profit_current}).")
+                        redirect_url = f"?section=you-owe&report_type={report_type}"
+                        if client_type_filter and client_type_filter != 'all':
+                            redirect_url += f"&client_type={client_type_filter}"
+                        return redirect(reverse("pending:summary") + redirect_url)
+                    
+                    if capital_closed > profit_current + epsilon:
+                        from django.contrib import messages
+                        messages.error(request, f"Cannot record payment: Capital closed (₹{capital_closed}) exceeds profit (₹{profit_current}).")
+                        redirect_url = f"?section=you-owe&report_type={report_type}"
+                        if client_type_filter and client_type_filter != 'all':
+                            redirect_url += f"&client_type={client_type_filter}"
+                        return redirect(reverse("pending:summary") + redirect_url)
+                    
+                    # Validate: REJECT if payment <= 0
+                    if amount <= Decimal(0):
+                        from django.contrib import messages
+                        messages.error(request, f"Cannot record payment: Amount must be greater than zero.")
+                        redirect_url = f"?section=you-owe&report_type={report_type}"
+                        if client_type_filter and client_type_filter != 'all':
+                            redirect_url += f"&client_type={client_type_filter}"
+                        return redirect(reverse("pending:summary") + redirect_url)
+                    
+                    # Lock settlement direction (MANDATORY - prevents profit/loss flipping)
+                    # For "admin_pays_profit", we must be in PROFIT case (NET > 0)
+                    if net <= 0:
+                        from django.contrib import messages
+                        messages.error(request, f"Cannot record profit payment: Client is not in profit (NET: ₹{net}). Use 'Client Pays' instead.")
                         redirect_url = f"?section=clients-owe&report_type={report_type}"
                         if client_type_filter and client_type_filter != 'all':
                             redirect_url += f"&client_type={client_type_filter}"
                         return redirect(reverse("pending:summary") + redirect_url)
                     
-                    # 📘 Share Calculation: share_amount = movement × share_pct / 100
-                    share_amount = (movement * total_pct) / Decimal(100)
-                    share_amount = share_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    # 🔹 STEP 3: PROFIT WITHDRAWAL (PROFIT-FIRST APPROACH)
+                    # 🚨 CRITICAL: Profit withdrawal affects ONLY CB, never CAPITAL
+                    # But for consistency, we track it similarly to loss settlement
                     
-                    # 📘 Pending = Share Amount (CRITICAL RULE)
-                    pending_before = share_amount
+                    # Calculate current PROFIT (the truth)
+                    profit_current = max(current_balance - old_balance, 0)
                     
-                    # 🔒 HARD SAFETY RULES (MANDATORY - NO EXCEPTIONS)
-                    # Rule 1: Never allow settlement if pending <= 0
-                    if pending_before <= Decimal("0.01"):
+                    # Reduce PROFIT by capital_closed (in profit space)
+                    profit_new = max(profit_current - capital_closed, 0)
+                    
+                    # ✅ Normalize PROFIT after every operation (capital-space: use round_capital)
+                    profit_new = round_capital(profit_new, decimals=4)  # Profit uses 4 decimals for precision
+                    
+                    # ✅ ERROR 5 FIX: Profit withdrawal with epsilon logic (mirrors loss settlement)
+                    # Calculate what CB would be after withdrawal
+                    cb_new_after_withdrawal = current_balance - capital_closed
+                    
+                    # If profit is fully withdrawn (within epsilon), set CB = CAPITAL
+                    if profit_new <= epsilon:
+                        cb_new_after_withdrawal = old_balance
+                    
+                    # ✅ ERROR 5 FIX: Validate CB won't drop below CAPITAL (prevent fake loss)
+                    if cb_new_after_withdrawal < old_balance - epsilon:
                         from django.contrib import messages
-                        messages.error(request, f"Cannot record payment: No pending amount to settle (pending: ₹{pending_before}).")
+                        messages.error(request, f"Cannot withdraw: Withdrawal would create fake loss (CB would be ₹{cb_new_after_withdrawal}, CAPITAL is ₹{old_balance}).")
                         redirect_url = f"?section=you-owe&report_type={report_type}"
                         if client_type_filter and client_type_filter != 'all':
                             redirect_url += f"&client_type={client_type_filter}"
                         return redirect(reverse("pending:summary") + redirect_url)
                     
-                    # Rule 2: Never allow settlement > pending (with tolerance for rounding)
-                    if amount > pending_before + Decimal("0.1"):  # Allow 0.1 tolerance for rounding
-                        from django.contrib import messages
-                        messages.error(request, f"Cannot record payment: Amount ₹{amount} exceeds pending amount ₹{pending_before}.")
-                        redirect_url = f"?section=you-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
+                    # For profit withdrawal, CAPITAL remains unchanged
+                    # CB is updated via BALANCE_RECORD, not here
+                    old_balance_new = old_balance  # CAPITAL unchanged for profit withdrawal
                     
-                    # Rule 3: Additional validation - ensure Old Balance and Current Balance are valid
-                    if old_balance <= 0:
-                        from django.contrib import messages
-                        messages.error(request, f"Cannot record payment: Invalid Old Balance (₹{old_balance}). Please check funding records.")
-                        redirect_url = f"?section=you-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
+                    # 🔹 STEP 6: RECALCULATE PENDING (STATELESS, ALWAYS)
+                    # ✅ ERROR 6 FIX: Pending must use normalized LOSS, never raw math or movement
+                    # For profit withdrawal, pending is always 0 (pending exists only for loss)
+                    pending_new = Decimal(0)
                     
-                    if current_balance < 0:
-                        from django.contrib import messages
-                        messages.error(request, f"Cannot record payment: Invalid Current Balance (₹{current_balance}). Please check balance records.")
-                        redirect_url = f"?section=you-owe&report_type={report_type}"
-                        if client_type_filter and client_type_filter != 'all':
-                            redirect_url += f"&client_type={client_type_filter}"
-                        return redirect(reverse("pending:summary") + redirect_url)
-                    
-                    # 🔹 STEP 3: CONVERT PAYMENT → CAPITAL CLOSED
-                    # 📘 Settlement Logic: capital_closed = payment × 100 / share_pct
-                    capital_closed = (amount * Decimal(100)) / total_pct
-                    capital_closed = capital_closed.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🔹 STEP 4: UPDATE OLD BALANCE (PROFIT CASE)
-                    # 📘 PROFIT Case (NET > 0): OB_new = OB + capital_closed
-                    # 📘 Clamp Rule: OB_new = min(OB_new, CB)
-                    # Old Balance moves AWAY from Current Balance (increases)
-                    old_balance_new = old_balance + capital_closed
-                    old_balance_new = old_balance_new.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🔒 CRITICAL SAFETY CHECK: Old Balance should not exceed Current Balance
-                    # If Old Balance exceeds Current Balance, clamp to Current Balance (fully paid)
-                    if old_balance_new > current_balance:
-                        old_balance_new = current_balance
-                    
-                    # 🔹 STEP 5: CURRENT BALANCE NEVER CHANGES (already set above)
-                    
-                    # 🔹 STEP 6: RECALCULATE NET (AFTER SETTLEMENT)
-                    # 📘 NET_new = CB - OB_new
-                    net_new = current_balance - old_balance_new
-                    movement_new = abs(net_new)
-                    
-                    # 🔹 STEP 7: RECALCULATE SHARE (STATELESS)
-                    # 📘 Share Calculation: share_new = movement_new × share_pct / 100
-                    share_new = (movement_new * total_pct) / Decimal(100)
-                    share_new = share_new.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    
-                    # 🔹 STEP 8: RECALCULATE PENDING (STATELESS)
-                    # 📘 Pending = Share Amount (CRITICAL RULE)
-                    pending_new = share_new
-                    pending_new = max(Decimal(0), pending_new)
-                    
-                    # 🔒 CLOSURE RULE (Hard Stop)
-                    # 📘 If pending_new <= 0.01: OB_new = CB, pending_new = 0
-                    if pending_new <= Decimal("0.01"):
-                        old_balance_new = current_balance
-                        pending_new = Decimal(0)
+                    # Calculate pending_before for display (stateless calculation)
+                    # ✅ ERROR 6 FIX: Use normalized LOSS, not movement
+                    # ✅ ERROR 5 FIX: Use single epsilon
+                    loss_before = max(old_balance - current_balance, 0)
+                    loss_before = round_capital(loss_before, decimals=1)  # Capital-space: loss
+                    if loss_before <= epsilon:
+                        loss_before = Decimal(0)
+                    pending_before_raw = (loss_before * total_pct) / Decimal(100)
+                    pending_before = round_share(pending_before_raw)  # Share-space: round DOWN
                     
                     # 🚨 CRITICAL FIX: Store Old Balance in ClientExchange
                     settlement_date = datetime.strptime(tx_date, "%Y-%m-%d").date()
                     
-                    # Update cached_old_balance in ClientExchange (this is the source of truth)
+                    # Update cached_old_balance in ClientExchange (DISPLAY CACHE, not source of truth)
+                    # ✅ FIX ISSUE 5: cached_old_balance is a performance cache, ledger is source of truth
                     # Use locked_client_exchange to ensure atomic update
                     locked_client_exchange.cached_old_balance = old_balance_new
                     locked_client_exchange.balance_last_updated = timezone.now()
                     locked_client_exchange.save(update_fields=['cached_old_balance', 'balance_last_updated'])
                     
                     # Amount is already normalized (abs value) from the check above
-                    # Round amount to 1 decimal place
-                    amount = amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    # Round amount (share-space: round DOWN)
+                    amount = round_share(amount)
                     
                     # Debug prints removed to prevent BrokenPipeError
                     
@@ -1681,11 +2145,11 @@ def settle_payment(request):
                         # This is what COMPANY pays to the client
                         # Admin's cut (1%) is tracked in TallyLedger but not paid directly
                         # 
-                        # Calculate share breakdown for transaction
-                        my_share_amount = (amount * Decimal(1)) / total_pct  # 1% of payment
-                        my_share_amount = my_share_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                        company_share_amount = amount - my_share_amount  # Remaining goes to company
-                        company_share_amount = company_share_amount.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                        # ✅ CORRECT IMPLEMENTATION: Split payment to prevent leakage
+                        # Round ONE side, give remainder to other (NO rounding on remainder)
+                        my_share_amount_raw = (amount * Decimal(1)) / total_pct  # 1% of payment
+                        my_share_amount = round_share(my_share_amount_raw)  # Round DOWN
+                        company_share_amount = amount - my_share_amount  # Remainder to company (NO rounding)
                         
                         # Update TallyLedger to reflect company payment
                         from core.models import TallyLedger
@@ -1755,14 +2219,7 @@ def settle_payment(request):
                     if client_type_filter and client_type_filter != 'all':
                         redirect_url += f"&client_type={client_type_filter}"
                     return redirect(reverse("pending:summary") + redirect_url)
-                else:
-                    # Invalid payment type
-                    from django.contrib import messages
-                    messages.error(request, f"Invalid payment type: {payment_type}")
-                    redirect_url = f"?section=you-owe&report_type={report_type}"
-                    if client_type_filter:
-                        redirect_url += f"&client_type={client_type_filter}"
-                    return redirect(reverse("pending:summary") + redirect_url)
+                    # Note: Invalid payment types are handled by validation at the start of the function
             except Exception as e:
                 # Log error and redirect with error message
                 import traceback
@@ -2068,8 +2525,8 @@ def calculate_net_tallies_from_transactions(client_exchange, as_of_date=None):
     
     # Calculate NET CLIENT TALLY
     # Net = (Your share from losses) - (Your share from profits) - (Client payments) + (Admin payments to client)
-    net_client_tally = (your_share_from_losses - your_share_from_profits - client_payments + admin_payments_to_client)
-    net_client_tally = net_client_tally.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    net_client_tally_raw = (your_share_from_losses - your_share_from_profits - client_payments + admin_payments_to_client)
+    net_client_tally = round_share(net_client_tally_raw)  # Share-space: round DOWN
     
     # Calculate NET COMPANY TALLY
     # Net = (Company 9% from losses) - (Company 9% from profits) - (Company payments to you) + (Admin payments to company)
@@ -2081,7 +2538,7 @@ def calculate_net_tallies_from_transactions(client_exchange, as_of_date=None):
     elif admin_payments_to_company > 0:
         # If positive, it means company paid you (unlikely with current structure)
         net_company_tally = net_company_tally + admin_payments_to_company
-    net_company_tally = net_company_tally.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    net_company_tally = round_share(net_company_tally)  # Share-space: round DOWN
     
     # Calculate YOUR EARNINGS (1% of losses + 1% of profits)
     # This is the 1% cut you get from company share
@@ -2089,7 +2546,8 @@ def calculate_net_tallies_from_transactions(client_exchange, as_of_date=None):
     total_profit = profit_transactions.aggregate(total=Sum("amount"))["total"] or Decimal(0)
     your_earnings_from_losses = (total_loss * Decimal(1)) / Decimal(100)  # 1% of losses
     your_earnings_from_profits = (total_profit * Decimal(1)) / Decimal(100)  # 1% of profits
-    your_earnings = (your_earnings_from_losses + your_earnings_from_profits).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    your_earnings_raw = (your_earnings_from_losses + your_earnings_from_profits)
+    your_earnings = round_share(your_earnings_raw)  # Share-space: round DOWN
     
     return {
         "net_client_tally": net_client_tally,
@@ -2256,7 +2714,9 @@ def pending_summary(request):
                     transaction_type=Transaction.TYPE_SETTLEMENT
                 ).exists():
                     # No settlement: Old Balance should equal Total Funding
-                    if abs(total_funding - current_balance) < Decimal("0.01"):  # Allow small rounding differences
+                    # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                    epsilon = Decimal("0.1")
+                    if abs(total_funding - current_balance) <= epsilon:
                         # Total Funding = Current Balance → No profit, no loss
                         # Force Old Balance to match Current Balance to ensure Net Change = 0
                         old_balance = current_balance
@@ -2265,7 +2725,10 @@ def pending_summary(request):
                 # 🔒 THE ONE RULE THAT DECIDES EVERYTHING:
                 # If Old Balance == Current Balance → Profit = 0, Loss = 0, Pending = 0
                 # There is NO EXCEPTION to this rule.
-                if abs(old_balance - current_balance) < Decimal("0.01"):  # Allow small rounding differences
+                # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                epsilon = Decimal("0.1")
+                loss_check = max(old_balance - current_balance, 0)
+                if loss_check <= epsilon:
                     # Old Balance == Current Balance → Skip this client entirely (no pending, no profit, no loss)
                     # Debug print removed to prevent BrokenPipeError
                     continue  # Skip adding to clients_owe_list
@@ -2273,7 +2736,8 @@ def pending_summary(request):
                 # Calculate NET LOSS = Old Balance - Current Balance
                 # If positive: client is in loss (Old Balance > Current Balance)
                 # If negative: client is in profit (Old Balance < Current Balance)
-                net_loss = old_balance - current_balance
+                # ✅ ERROR 4 FIX: LOSS must always be clamped
+                net_loss = max(old_balance - current_balance, 0)
                 
                 if net_loss > 0:
                     # Client is in LOSS
@@ -2297,8 +2761,8 @@ def pending_summary(request):
                     # Wrong flow: Settlement → move Old Balance → recompute share → subtract settlement again ❌
                     my_share = my_share_from_net_loss
                     
-                    # 🚨 CRITICAL: Round ONLY at the final step, not in between calculations
-                    my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    # 🚨 CRITICAL: Round ONLY at the final step (share-space: round DOWN)
+                    my_share = round_share(my_share)
                 else:
                     # Client is in profit or break-even - no pending
                     my_share = Decimal(0)
@@ -2327,8 +2791,7 @@ def pending_summary(request):
             current_balance = profit_loss_data["exchange_balance"]
             old_balance = get_old_balance_after_settlement(client_exchange)
             
-            # 🚨 DEBUG: Verify Old Balance is correct (temporary - remove after debugging)
-            print(f"DEBUG COMPANY: {client_exchange.client.name} - OB: {old_balance}, CB: {current_balance}, Cached OB: {client_exchange.cached_old_balance}, Total Loss: {old_balance - current_balance}")
+            # Debug print removed to prevent BrokenPipeError
             
             # 🔒 IMPORTANT: Do NOT override old_balance for company clients
             # get_old_balance_after_settlement already correctly handles settlements
@@ -2363,9 +2826,26 @@ def pending_summary(request):
             # (Old Balance might equal Current Balance due to rounding, but shares might still exist)
             # So we'll check this after calculating shares
             
-            # Calculate Total Loss: Old Balance - Current Balance
-            # This is the 100% loss that the client has incurred
-            total_loss = old_balance - current_balance
+            # ✅ BUG #2 FIX: LOSS must come from LossSnapshot (FROZEN), NOT recalculated
+            # ❌ WRONG: total_loss = max(old_balance - current_balance, 0)  # ILLEGAL recalculation
+            # ✅ CORRECT: Get frozen loss from LossSnapshot, then calculate remaining_loss from settlements
+            active_loss_snapshot = LossSnapshot.objects.filter(
+                client_exchange=client_exchange,
+                is_settled=False
+            ).first()
+            
+            if active_loss_snapshot:
+                # ✅ CORRECT: Use frozen loss_amount (immutable)
+                original_loss = Decimal(str(active_loss_snapshot.loss_amount))  # FROZEN
+                # ✅ CORRECT: Calculate remaining_loss from settlements (derived)
+                remaining_loss = active_loss_snapshot.get_remaining_loss()
+                remaining_loss = Decimal(str(remaining_loss))  # Ensure Decimal
+                # Use remaining_loss for calculations (this is the correct loss to use)
+                total_loss = remaining_loss
+            else:
+                # No active loss snapshot - calculate from OB and CB (for display only)
+                # This should not happen in normal flow, but handle gracefully
+                total_loss = max(old_balance - current_balance, 0)
             
             # 🚨 CRITICAL: Only process if there's actually a loss (total_loss > 0)
             # If total_loss <= 0, this is profit or break-even, so skip to "You Owe Clients" section
@@ -2374,27 +2854,30 @@ def pending_summary(request):
                 # No significant loss - this client should be in "You Owe Clients" section (profit case) or skipped
                 continue  # Skip adding to clients_owe_list
             
-            # Get share percentages for display - ALWAYS fetch from ClientExchange (source of truth)
+            # 🎯 SHARE DEFINITIONS (CRITICAL FIX)
+            # Determine TOTAL SHARE (this fixes company-client bugs)
             my_share_pct = client_exchange.my_share_pct or Decimal(0)
             if client_exchange.client.is_company_client:
-                company_share_pct = client_exchange.company_share_pct or Decimal(0)
+                # 🚨 CRITICAL: For company clients, ALWAYS use total_share_pct = 10
+                # Never use my_share_pct for calculations in company clients
+                total_share_pct = Decimal(10)  # ALWAYS 10 for company clients
+                my_share_pct_effective = Decimal(1)  # you get 1%
+                company_share_pct = Decimal(9)  # company gets 9%
             else:
+                # My clients: use my_share_pct
+                total_share_pct = my_share_pct  # usually 10
+                my_share_pct_effective = my_share_pct  # you get full share
                 company_share_pct = Decimal(0)
             
             # For company clients: Recalculate Combined Share from Total Loss
-            # Combined Share = Total Loss × (Company Share % / 100)
-            # This ensures Combined Share is always 10% of Total Loss (if company_share_pct = 10%)
+            # ✅ CORRECT IMPLEMENTATION: Use calculate_share_split to prevent leakage
             if client_exchange.client.is_company_client:
-                # Recalculate from Total Loss to ensure accuracy
-                # Use company_share_pct (10%) for combined share, not my_share_pct (1%)
-                # 🚨 CRITICAL: NO ROUNDING until final step - calculate with full precision
-                combined_share_from_loss = (total_loss * company_share_pct) / Decimal(100)
-                
-                # My Share = 1% of Total Loss
-                my_share_from_loss = (total_loss * Decimal(1)) / Decimal(100)
-                
-                # Company Share = 9% of Total Loss
-                company_share_from_loss = (total_loss * Decimal(9)) / Decimal(100)
+                # Use calculate_share_split to ensure: my_share + company_share == combined_share (ALWAYS)
+                my_share_from_loss, company_share_from_loss, combined_share_from_loss = calculate_share_split(
+                    loss=total_loss,
+                    my_pct=my_share_pct_effective,
+                    company_pct=company_share_pct,
+                )
                 
                 # 🚨 CRITICAL: Settlements are already reflected by moving Old Balance
                 # So shares are calculated statelessly from the current total_loss
@@ -2410,11 +2893,11 @@ def pending_summary(request):
                 company_share = company_share_from_loss
                 combined_share = combined_share_from_loss
                 
-                # 🚨 CRITICAL: Round ONLY at the final step, not in between calculations
+                # 🚨 CRITICAL: Round ONLY at the final step (share-space: round DOWN)
                 # This prevents rounding errors from accumulating
-                my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                my_share = round_share(my_share)
+                company_share = round_share(company_share)
+                combined_share = round_share(combined_share)
             else:
                 # MY CLIENTS: Combined Share = My Share (no company share)
                 # my_share is already calculated above from net_loss
@@ -2440,6 +2923,12 @@ def pending_summary(request):
                     total_my_share = my_share
                 total_company_share = Decimal(0)
             
+            # ✅ FIX: Calculate RAW pending for validation (before rounding)
+            # This is what backend validates against
+            pending_raw = (total_loss * total_share_pct) / Decimal(100)
+            # Rounded pending is for display only
+            pending_display = round_share(pending_raw)
+            
             # 🚨 CRITICAL: Only add client if there's actual pending amount
             # For company clients, check combined_share; for my clients, check my_share
             # This ensures clients with pending payments are always shown
@@ -2453,7 +2942,11 @@ def pending_summary(request):
             if not has_pending:
                 # No pending amount - skip this client
                 # Also skip if Old Balance == Current Balance (no profit/loss)
-                if abs(old_balance - current_balance) < Decimal("0.01"):
+                # ✅ ERROR 8 FIX: Use same normalization for LOSS and PROFIT
+                epsilon = Decimal("0.1")
+                net_check = current_balance - old_balance
+                if abs(net_check) <= epsilon:
+                    # Break-even: treat as zero
                     continue
                 else:
                     # Old Balance != Current Balance but no pending - this shouldn't happen, but skip anyway
@@ -2470,7 +2963,8 @@ def pending_summary(request):
                 "current_balance": current_balance,  # Current balance (for total_loss calculation)
                 "exchange_balance": current_balance,  # Current balance (renamed for clarity)
                 "total_loss": total_loss,  # Total Loss = Old Balance - Current Balance (100% loss)
-                "pending_amount": combined_share if client_exchange.client.is_company_client else my_share,  # Pending amount (client owes you) - For company clients: Combined Share (10% of loss); For my clients: My Share (1% of loss)
+                "pending_amount": pending_display,  # Pending amount (client owes you) - ROUNDED for display
+                "pending_raw": pending_raw,  # ✅ FIX: RAW pending for validation (before rounding)
                 "company_pending": company_share if client_exchange.client.is_company_client else Decimal(0),  # Company share pending
                 "your_earnings": your_earnings,  # Your earnings from company split (1% of losses + 1% of profits)
                 "my_share": my_share,  # Admin's share of loss (admin earns this) - AFTER payments
@@ -2481,6 +2975,7 @@ def pending_summary(request):
                 "total_combined_share": total_combined_share,  # Total combined share BEFORE payments (for modal display)
                 "my_share_pct": my_share_pct,  # My share percentage
                 "company_share_pct": company_share_pct,  # Company share percentage
+                "total_share_pct": total_share_pct,  # ✅ FIX: TOTAL share percentage (my_pct + company_pct)
                 "is_company_client": client_exchange.client.is_company_client,  # Client type flag
             })
             # IMPORTANT: Skip "You Owe Clients" section if client has pending losses
@@ -2495,81 +2990,75 @@ def pending_summary(request):
         # For MY CLIENTS: Check Current Balance > Old Balance (not net_client_tally)
         # For COMPANY CLIENTS: Use net_client_tally < 0
         
-        # For BOTH MY CLIENTS and COMPANY CLIENTS: Use Old Balance vs Current Balance
-        # This is the correct way to determine profit/loss
-        old_balance_check = get_old_balance_after_settlement(client_exchange)
-        current_balance_check = profit_loss_data["exchange_balance"]
+        # 🚨 CRITICAL: Check for active LossSnapshot first
+        # PROFIT can ONLY exist when NO active LossSnapshot exists
+        active_loss_snapshot_profit = LossSnapshot.objects.filter(
+            client_exchange=client_exchange,
+            is_settled=False
+        ).first()
         
-        # Profit case: Current Balance > Old Balance (you owe client)
-        # Loss case: Old Balance > Current Balance (client owes you)
-        is_profit_case = current_balance_check > old_balance_check
+        if active_loss_snapshot_profit:
+            # Active loss exists - PROFIT cannot exist
+            is_profit_case = False
+        else:
+            # No active loss - check for profit
+            old_balance_check = get_old_balance_after_settlement(client_exchange)
+            current_balance_check = profit_loss_data["exchange_balance"]
+            is_profit_case = current_balance_check > old_balance_check
         
         if is_profit_case:
             # Calculate shares for display
             if client_exchange.client.is_company_client:
                 # COMPANY CLIENTS: For PROFIT, calculate from Old Balance - Current Balance
-                # 🚨 CRITICAL: Calculate profit share directly from net_profit, NOT from transactions
-                # This ensures we show the correct pending amount even if transactions are missing
-                
-                # Get Old Balance and Current Balance
-                old_balance_profit = get_old_balance_after_settlement(client_exchange)
-                current_balance_profit = profit_loss_data["exchange_balance"]
-                
-                # Calculate Net Profit = Current Balance - Old Balance
-                # Positive = profit (you owe client)
-                net_profit = current_balance_profit - old_balance_profit
-                
-                # Calculate Total Profit (absolute value for share calculation)
-                total_profit_abs = abs(net_profit)
-                
-                # Get share percentages
-                company_share_pct = client_exchange.company_share_pct or Decimal(0)
-                
-                # Combined Share = Total Profit × Company Share % (10% of profit)
-                # This is NEGATIVE because it's profit (you owe client)
-                # 🚨 CRITICAL: NO ROUNDING until final step - calculate with full precision
-                combined_share_from_profit = (total_profit_abs * company_share_pct) / Decimal(100)
-                # Make it negative to indicate you owe client
-                combined_share_from_profit = -combined_share_from_profit
-                
-                # My Share = 1% of Total Profit (negative because you owe)
-                my_share_from_profit = (total_profit_abs * Decimal(1)) / Decimal(100)
-                my_share_from_profit = -my_share_from_profit  # Negative because you owe
-                
-                # Company Share = 9% of Total Profit (negative because you owe)
-                company_share_from_profit = (total_profit_abs * Decimal(9)) / Decimal(100)
-                company_share_from_profit = -company_share_from_profit  # Negative because you owe
-                
-                # 🚨 CRITICAL: Settlements are already reflected by moving Old Balance
-                # So shares are already correct - DO NOT add/subtract payments again
-                # 
-                # The Old Balance has already been moved forward by previous settlements
-                # So the current net_profit (current_balance - old_balance) already accounts for settlements
-                # Therefore, shares calculated from this net_profit are the correct pending amounts
-                # 
-                # Correct flow: Settlement → move Old Balance → recompute profit → recompute share → that IS pending
-                # Wrong flow: Settlement → move Old Balance → recompute share → add payments again ❌
-                combined_share = combined_share_from_profit
-                my_share = my_share_from_profit
-                company_share = company_share_from_profit
-                
-                # If fully paid (Old Balance == Current Balance), shares should already be 0
-                # But clamp to 0 just in case of rounding issues
-                if combined_share >= 0:
+                # 🚨 CRITICAL: PROFIT can only exist when NO active LossSnapshot exists
+                if active_loss_snapshot_profit:
+                    # Active loss exists - PROFIT = 0
                     combined_share = Decimal(0)
-                if my_share >= 0:
                     my_share = Decimal(0)
-                if company_share >= 0:
                     company_share = Decimal(0)
-                
-                # 🚨 CRITICAL: Round ONLY at the final step, not in between calculations
-                # This prevents rounding errors from accumulating
-                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                
-                # Unpaid profit = absolute value of combined_share (what you still owe)
-                unpaid_profit = abs(combined_share) if combined_share < 0 else Decimal(0)
+                    unpaid_profit = Decimal(0)
+                else:
+                    # No active loss - calculate profit
+                    old_balance_profit = get_old_balance_after_settlement(client_exchange)
+                    current_balance_profit = profit_loss_data["exchange_balance"]
+                    
+                    # Calculate Net Profit = Current Balance - Old Balance
+                    net_profit = current_balance_profit - old_balance_profit
+                    total_profit_abs = abs(net_profit)
+                    
+                    # Get share percentages
+                    company_share_pct = client_exchange.company_share_pct or Decimal(0)
+                    total_share_pct = (client_exchange.my_share_pct or Decimal(0)) + company_share_pct
+                    
+                    # Combined Share = Total Profit × Total Share % (10% of profit)
+                    combined_share_from_profit = (total_profit_abs * total_share_pct) / Decimal(100)
+                    combined_share_from_profit = -combined_share_from_profit  # Negative (you owe)
+                    
+                    # My Share = 1% of Total Profit (negative)
+                    my_share_from_profit = (total_profit_abs * Decimal(1)) / Decimal(100)
+                    my_share_from_profit = -my_share_from_profit
+                    
+                    # Company Share = 9% of Total Profit (negative)
+                    company_share_from_profit = (total_profit_abs * Decimal(9)) / Decimal(100)
+                    company_share_from_profit = -company_share_from_profit
+                    
+                    combined_share = round_share(combined_share_from_profit)  # Share-space: round DOWN
+                    my_share = round_share(my_share_from_profit)  # Share-space: round DOWN
+                    company_share = round_share(company_share_from_profit)  # Share-space: round DOWN
+                    
+                    # Clamp to 0 if positive
+                    if combined_share >= 0:
+                        combined_share = Decimal(0)
+                    if my_share >= 0:
+                        my_share = Decimal(0)
+                    if company_share >= 0:
+                        company_share = Decimal(0)
+                    
+                    unpaid_profit = abs(combined_share) if combined_share < 0 else Decimal(0)
+            
+            # ✅ NOTE: The old code path above sets my_share, but it will be overwritten
+            # by the new profit calculation logic below (line 3112: my_share = your_receivable)
+            # This ensures correct calculation that accounts for active LOSS
             else:
                 # My clients: Calculate from NET CHANGE using correct sign convention
                 # 📘 CORRECT SIGN RULE (FINAL):
@@ -2599,7 +3088,9 @@ def pending_summary(request):
                     transaction_type=Transaction.TYPE_SETTLEMENT
                 ).exists():
                     # No settlement: Old Balance should equal Total Funding
-                    if abs(total_funding - current_balance) < Decimal("0.01"):  # Allow small rounding differences
+                    # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                    epsilon = Decimal("0.1")
+                    if abs(total_funding - current_balance) <= epsilon:
                         # Total Funding = Current Balance → No profit, no loss
                         # Force Old Balance to match Current Balance to ensure Net Change = 0
                         old_balance = current_balance
@@ -2608,7 +3099,10 @@ def pending_summary(request):
                 # 🔒 THE ONE RULE THAT DECIDES EVERYTHING:
                 # If Old Balance == Current Balance → Profit = 0, Loss = 0, Pending = 0
                 # There is NO EXCEPTION to this rule.
-                if abs(old_balance - current_balance) < Decimal("0.01"):  # Allow small rounding differences
+                # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                epsilon = Decimal("0.1")
+                loss_check = max(old_balance - current_balance, 0)
+                if loss_check <= epsilon:
                     # Old Balance == Current Balance → Skip this client entirely (no pending, no profit, no loss)
                     # Debug print removed to prevent BrokenPipeError
                     continue  # Skip adding to you_owe_list
@@ -2644,7 +3138,7 @@ def pending_summary(request):
                 
                 # 🚨 CRITICAL: Round ONLY at the final step, not in between calculations
                 # This prevents rounding errors from accumulating
-                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                combined_share = round_share(combined_share)  # Share-space: round DOWN
                 
                 # For MY CLIENTS: my_share = combined_share (no company share)
                 # combined_share is negative (e.g., -70), keep it negative for display
@@ -2721,7 +3215,7 @@ def pending_summary(request):
                     combined_share = Decimal(0)
                 
                 # 🚨 CRITICAL: Round ONLY at the final step, not in between calculations
-                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                combined_share = round_share(combined_share)  # Share-space: round DOWN
                 
                 # For company clients: Split combined share into my_share (1%) and company_share (9%)
                 if client_exchange.client.is_company_client:
@@ -2751,8 +3245,8 @@ def pending_summary(request):
                     if company_share >= 0:
                         company_share = Decimal(0)
                     
-                    my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    my_share = round_share(my_share)  # Share-space: round DOWN
+                    company_share = round_share(company_share)  # Share-space: round DOWN
                 # For my clients: my_share = combined_share (already calculated above, keep negative)
                 
                 you_owe_list.append({
@@ -2910,16 +3404,29 @@ def export_pending_csv(request):
                     client_exchange=client_exchange,
                     transaction_type=Transaction.TYPE_SETTLEMENT
                 ).exists():
-                    if abs(total_funding - current_balance) < Decimal("0.01"):
+                    # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                    epsilon = Decimal("0.1")
+                    if abs(total_funding - current_balance) <= epsilon:
                         old_balance = current_balance
                 
                 # 🔒 THE ONE RULE THAT DECIDES EVERYTHING:
                 # If Old Balance == Current Balance → Profit = 0, Loss = 0, Pending = 0
-                if abs(old_balance - current_balance) < Decimal("0.01"):
+                # ✅ ERROR 8 FIX: Use same normalization for LOSS and PROFIT
+                epsilon = Decimal("0.1")
+                net_check = current_balance - old_balance
+                if abs(net_check) <= epsilon:
+                    # Break-even: treat as zero
                     continue  # Skip adding to clients_owe_list
                 
+                # Calculate LOSS (always clamped)
+                loss_check = max(old_balance - current_balance, 0)
+                loss_check = round_capital(loss_check, decimals=1)  # Capital-space: loss
+                if loss_check <= epsilon:
+                    loss_check = Decimal(0)
+                
                 # Calculate NET LOSS = Old Balance - Current Balance
-                net_loss = old_balance - current_balance
+                # ✅ ERROR 4 FIX: LOSS must always be clamped
+                net_loss = max(old_balance - current_balance, 0)
                 
                 if net_loss > 0:
                     # Client is in LOSS
@@ -2927,7 +3434,7 @@ def export_pending_csv(request):
                     
                     # Calculate My Share = Net Loss × My Share %
                     my_share_from_net_loss = (net_loss * my_share_pct) / Decimal(100)
-                    my_share_from_net_loss = my_share_from_net_loss.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    my_share_from_net_loss = round_share(my_share_from_net_loss)  # Share-space: round DOWN
                     
                     # 🚨 CRITICAL: Settlements are already reflected by moving Old Balance
                     # So pending is simply the share amount - DO NOT subtract settlements again
@@ -2940,7 +3447,7 @@ def export_pending_csv(request):
                     # Wrong flow: Settlement → move Old Balance → recompute share → subtract settlement again ❌
                     my_share = my_share_from_net_loss
                     my_share = max(Decimal(0), my_share)  # Clamp to 0, but don't subtract settlements
-                    my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    my_share = round_share(my_share)  # Share-space: round DOWN
                 else:
                     my_share = Decimal(0)
             else:
@@ -3007,7 +3514,9 @@ def export_pending_csv(request):
                     client_exchange=client_exchange,
                     transaction_type=Transaction.TYPE_SETTLEMENT
                 ).exists():
-                    if abs(total_funding - current_balance) < Decimal("0.01"):
+                    # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                    epsilon = Decimal("0.1")
+                    if abs(total_funding - current_balance) <= epsilon:
                         old_balance = current_balance
             
             # For company clients, prioritize old_balance if it's greater than current_balance
@@ -3149,7 +3658,7 @@ def export_pending_csv(request):
                 total_profit = profit_transactions.aggregate(total=Sum("amount"))["total"] or Decimal(0)
                 
                 your_payable = (total_profit * Decimal(1)) / Decimal(100)
-                your_payable = your_payable.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                your_payable = round_share(your_payable)  # Share-space: round DOWN
                 
                 admin_payments_to_client = Transaction.objects.filter(
                     client_exchange=client_exchange,
@@ -3159,20 +3668,20 @@ def export_pending_csv(request):
                 ).aggregate(total=Sum("client_share_amount"))["total"] or Decimal(0)
                 
                 my_share = max(Decimal(0), your_payable - admin_payments_to_client)
-                my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                my_share = my_share# Share-space: use round_share() instead
                 
                 company_share_pct = client_exchange.company_share_pct
                 company_share_total = (total_profit * company_share_pct) / Decimal(100)
-                company_share_total = company_share_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                company_share_total = round_share(company_share_total)  # Share-space: round DOWN
                 
                 company_portion = company_share_total - your_payable
-                company_portion = company_portion.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                company_portion = round_share(company_portion)  # Share-space: round DOWN
                 
                 company_share = max(Decimal(0), company_portion - admin_payments_to_client)
-                company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                company_share = company_share# Share-space: use round_share() instead
                 
                 combined_share = max(Decimal(0), company_share_total - admin_payments_to_client)
-                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                combined_share = round_share(combined_share)  # Share-space: round DOWN
             else:
                 # My clients: Calculate from NET CHANGE
                 old_balance = get_old_balance_after_settlement(client_exchange)
@@ -3187,7 +3696,9 @@ def export_pending_csv(request):
                     client_exchange=client_exchange,
                     transaction_type=Transaction.TYPE_SETTLEMENT
                 ).exists():
-                    if abs(total_funding - current_balance) < Decimal("0.01"):
+                    # ✅ ERROR 5 FIX: Use single epsilon (0.1 for 1 decimal place)
+                    epsilon = Decimal("0.1")
+                    if abs(total_funding - current_balance) <= epsilon:
                         old_balance = current_balance
                 
                 if abs(old_balance - current_balance) < Decimal("0.01"):
@@ -3197,7 +3708,7 @@ def export_pending_csv(request):
                 my_share_pct = client_exchange.my_share_pct
                 
                 combined_share_raw = (net_change * my_share_pct) / Decimal(100)
-                combined_share_raw = combined_share_raw.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                combined_share_raw = round_share(combined_share_raw)  # Share-space: round DOWN
                 
                 admin_payments_to_client = Transaction.objects.filter(
                     client_exchange=client_exchange,
@@ -3214,7 +3725,7 @@ def export_pending_csv(request):
                 else:
                     combined_share = Decimal(0)
                 
-                combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                combined_share = round_share(combined_share)  # Share-space: round DOWN
                 my_share = combined_share
                 company_share = Decimal(0)
             
@@ -3240,7 +3751,7 @@ def export_pending_csv(request):
                 if client_exchange.client.is_company_client:
                     # Use company_share_pct (10%) for Combined Share
                     combined_share_from_total_profit = (total_profit * company_share_pct) / Decimal(100)
-                    combined_share_from_total_profit = combined_share_from_total_profit.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    combined_share_from_total_profit = round_share(combined_share_from_total_profit)  # Share-space: round DOWN
                     
                     # Subtract any payments already made
                     admin_payments_to_client = Transaction.objects.filter(
@@ -3256,14 +3767,14 @@ def export_pending_csv(request):
                     if combined_share >= 0:
                         combined_share = Decimal(0)
                     
-                    combined_share = combined_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    combined_share = round_share(combined_share)  # Share-space: round DOWN
                     
                     # Recalculate my_share and company_share from total_profit
                     my_share_from_total = (total_profit * Decimal(1)) / Decimal(100)
-                    my_share_from_total = my_share_from_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    my_share_from_total = round_share(my_share_from_total)  # Share-space: round DOWN
                     
                     company_share_from_total = (total_profit * Decimal(9)) / Decimal(100)
-                    company_share_from_total = company_share_from_total.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    company_share_from_total = round_share(company_share_from_total)  # Share-space: round DOWN
                     
                     # Adjust by subtracting payments proportionally
                     if combined_share_from_total_profit < 0:
@@ -3283,8 +3794,8 @@ def export_pending_csv(request):
                         my_share = Decimal(0)
                         company_share = Decimal(0)
                     
-                    my_share = my_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-                    company_share = company_share.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                    my_share = round_share(my_share)  # Share-space: round DOWN
+                    company_share = round_share(company_share)  # Share-space: round DOWN
                 
                 you_owe_list.append({
                     "client_code": client_exchange.client.code,
@@ -5478,8 +5989,8 @@ def client_balance(request, client_pk):
         current_balance = total_balance_in_exchange
         net_change = current_balance - old_balance
         my_share_pct = client_exchange.my_share_pct
-        your_net_profit = (net_change * my_share_pct) / Decimal(100)
-        your_net_profit = your_net_profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        your_net_profit_raw = (net_change * my_share_pct) / Decimal(100)
+        your_net_profit = round_share(your_net_profit_raw)  # Share-space: round DOWN
         
         exchange_balances.append({
             "client_exchange": client_exchange,
