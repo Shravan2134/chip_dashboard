@@ -150,3 +150,4 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR('Transaction rolled back. No data was deleted.'))
             raise
 
+

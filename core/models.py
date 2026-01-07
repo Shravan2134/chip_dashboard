@@ -292,29 +292,6 @@ class ClientDailyBalance(TimeStampedModel):
         return f"Balance - ₹{self.remaining_balance} on {self.date}"
 
 
-class PendingAmount(TimeStampedModel):
-    """
-    Separate ledger for client's unpaid losses.
-    Pending is created only from losses and reduced only when client pays.
-    Pending is NOT affected by funding, profit, or profit payout.
-    """
-    client_exchange = models.ForeignKey("ClientExchange", related_name="pending_amounts", on_delete=models.CASCADE)
-    pending_amount = models.DecimalField(
-        max_digits=14, 
-        decimal_places=2, 
-        default=0,
-        help_text="Total pending amount (unpaid losses) for this client-exchange"
-    )
-    note = models.TextField(blank=True, help_text="Optional note about pending amount")
-    
-    class Meta:
-        unique_together = ("client_exchange",)
-        verbose_name_plural = "Pending Amounts"
-    
-    def __str__(self):
-        return f"{self.client_exchange} - Pending: ₹{self.pending_amount}"
-
-
 class OutstandingAmount(TimeStampedModel):
     """
     Netted ledger for MY CLIENTS only.
@@ -325,8 +302,7 @@ class OutstandingAmount(TimeStampedModel):
     - Negative: You owe client (unpaid profit share) → Auto-settles and resets to 0
     - Zero: All settled
     
-    This is ONLY for My Clients (not company clients).
-    Company clients use PendingAmount (separate ledgers).
+    This is ONLY for My Clients.
     
     Key Logic:
     - Loss: Outstanding += your_share (client owes you more)

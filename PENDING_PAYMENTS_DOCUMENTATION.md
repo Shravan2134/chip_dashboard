@@ -1,623 +1,542 @@
-# Pending Payments System Documentation
+# PENDING PAYMENTS - FORMULAS, LOGIC & IMPLEMENTATION
 
-## Overview
-
-This document explains how the pending payments system calculates all financial values, including Old Balance, Current Balance, Total Loss/Profit, Shares, and Percentages for both My Clients and Company Clients.
-
----
-
-## Table of Contents
-
-1. [Core Concepts](#core-concepts)
-2. [Old Balance Calculation](#old-balance-calculation)
-3. [Current Balance Calculation](#current-balance-calculation)
-4. [Net Profit / Total Loss Calculation](#net-profit--total-loss-calculation)
-5. [Share Calculations](#share-calculations)
-6. [Share Percentages](#share-percentages)
-7. [Pending Amount Calculation](#pending-amount-calculation)
-8. [Examples](#examples)
-9. [Business Rules](#business-rules)
+**Version:** 1.0  
+**Last Updated:** 2025-01-XX  
+**Status:** Production Ready
 
 ---
 
-## Core Concepts
+## TABLE OF CONTENTS
+
+1. [Overview](#1-overview)
+2. [Core Concepts](#2-core-concepts)
+3. [PIN-TO-PIN Formula](#3-pin-to-pin-formula)
+4. [Net Tally Calculation](#4-net-tally-calculation)
+5. [Rounding Rules](#5-rounding-rules)
+6. [Implementation Flow](#6-implementation-flow)
+7. [Code Structure](#7-code-structure)
+8. [Examples](#8-examples)
+
+---
+
+## 1. OVERVIEW
+
+The Pending Payments system calculates what clients owe you and what you owe clients based on a **ledger-based approach** that tracks all transactions (losses, profits, and settlements).
 
 ### Key Principles
 
-1. **Old Balance and Current Balance define reality** - Everything else is derived from these two values
-2. **Net Profit is the ONLY source of truth** - All share calculations come from Net Profit
-3. **Shares are stateless** - They are recalculated fresh every time from Net Profit
-4. **Pending is stateful** - It depends on settlements made (Pending = Share Amount - Settlements)
-5. **Settlement resets Old Balance** - When a settlement occurs, Old Balance moves forward
+- ✅ **Single Source of Truth**: Pending amounts come ONLY from transaction ledger calculations
+- ✅ **No Stored Pending**: Pending is always calculated dynamically, never stored
+- ✅ **Two Separate Sections**: 
+  - **Clients Owe You** (net_share > 0)
+  - **You Owe Clients** (net_share < 0)
+- ✅ **Share-Space Rounding**: Always rounds DOWN to prevent over-collection
 
 ---
 
-## Old Balance Calculation
+## 2. CORE CONCEPTS
 
-### Definition
+### 2.1 Two Spaces
 
-**Old Balance** = The exchange balance immediately BEFORE the current profit/loss situation. This represents the original capital invested (after accounting for settlements).
+The system operates in **two distinct spaces**:
 
-### Formula
+#### **Capital-Space** (What Happened)
+- **Funding**: Total money given to client = `Σ(FUNDING.amount)`
+- **Exchange Balance**: Current balance in exchange (from latest balance record)
+- **Client PnL**: `Exchange Balance - Funding`
+- **Purpose**: Shows WHAT happened in trading
 
-```
-IF settlement exists:
-    Old Balance = Current Balance AT settlement date + Funding AFTER settlement
-ELSE:
-    Old Balance = SUM of ALL FUNDING transactions
-```
+#### **Share-Space** (What Is Still Payable)
+- **Net Share**: Amount still owed (from ledger calculations)
+- **Purpose**: Shows WHAT is still payable after settlements
+- **Source**: Calculated from transactions ONLY
 
-### Detailed Logic
+### 2.2 Golden Rule
 
-#### Step 1: Check for Settlements
-
-The system first checks if any SETTLEMENT transactions exist for the client-exchange pair.
-
-#### Step 2A: If Settlement Exists
-
-1. Find the **last SETTLEMENT transaction** (most recent date)
-2. Get **Current Balance AT the settlement date** using `get_exchange_balance(client_exchange, as_of_date=last_settlement.date)`
-3. Get all **FUNDING transactions AFTER the last settlement** (date > settlement date)
-4. Calculate: `Old Balance = balance_at_settlement + funding_after_settlement`
-
-**Why this works:**
-- Settlement closes part of the loss
-- The balance at settlement becomes the new base
-- Only funding after settlement counts toward new capital
-
-#### Step 2B: If No Settlement Exists
-
-1. Get all **FUNDING transactions** (no date filter)
-2. Calculate: `Old Balance = SUM(all_funding_amounts)`
-
-**Why this works:**
-- No settlement means no capital reset
-- Total funding = original capital base
-
-### Important Rules
-
-✅ **DO:**
-- Always respect settlements when calculating Old Balance
-- Use balance_at_settlement as the new base after settlement
-- Only count funding that came AFTER the last settlement
-
-❌ **DON'T:**
-- Never use `sum(all_funding)` if a settlement exists
-- Never override Old Balance with total_funding after settlement
-- Never include funding that came before settlement in the new base
-
-### Example
-
-**Scenario:**
-- Dec 1: FUNDING ₹100
-- Dec 1: BALANCE_RECORD ₹10 (loss of ₹90)
-- Dec 2: SETTLEMENT ₹9 (client paid 10% share)
-- Dec 3: FUNDING ₹100
-
-**Calculation:**
-1. Settlement exists → Use settlement-aware logic
-2. Balance at settlement (Dec 2) = ₹10
-3. Funding after settlement = ₹100
-4. **Old Balance = ₹10 + ₹100 = ₹110**
-
-**Without settlement-aware logic (WRONG):**
-- Old Balance = ₹100 + ₹100 = ₹200 ❌ (double-counts pre-settlement funding)
+> **Capital-space tells WHAT happened. Share-space tells WHAT is still payable. Ledger settles share-space only.**
 
 ---
 
-## Current Balance Calculation
+## 3. PIN-TO-PIN FORMULA
 
-### Definition
+The pending payments system uses a **PIN-TO-PIN** formula that ensures accuracy and prevents drift.
 
-**Current Balance** = The latest exchange balance recorded in the system. This is the actual current state of the client's account.
+### 3.1 Formula Steps
 
-### Formula
+For each `ClientExchange`:
 
+```python
+# Step 1: Get the two stored values
+funding = client_exchange.cached_total_funding or Decimal(0)
+exchange_balance = client_exchange.cached_current_balance or Decimal(0)
+
+# Step 2: Calculate NET (capital-space) - for display only
+NET = exchange_balance - funding
+
+# Step 3: Get net_share from ledger (share-space) - ONLY source for pending
+net_tallies = calculate_net_tallies_from_transactions(client_exchange)
+net_share = net_tallies["net_client_tally"]
+
+# Step 4: Determine section based on net_share (not NET)
+if net_share > 0:
+    section = "Clients Need To Pay Me"
+elif net_share < 0:
+    section = "I Need To Pay Clients"
+else:
+    skip  # Fully settled
 ```
-Current Balance = Latest BALANCE_RECORD transaction amount
-```
 
-### Detailed Logic
+### 3.2 Critical Rules
 
-1. Query all **BALANCE_RECORD transactions** for the client-exchange pair
-2. Order by date (descending) and created_at (descending)
-3. Take the **most recent** balance record
-4. Use its `amount` field as Current Balance
-
-### Important Rules
-
-✅ **DO:**
-- Always use the latest BALANCE_RECORD
-- Consider both date and created_at for ordering
-
-❌ **DON'T:**
-- Never use FUNDING, LOSS, or PROFIT transactions for current balance
-- Never use cached values if they might be stale
-
-### Example
-
-**Scenario:**
-- Dec 1: BALANCE_RECORD ₹100
-- Dec 5: BALANCE_RECORD ₹50
-- Dec 10: BALANCE_RECORD ₹75
-
-**Current Balance = ₹75** (latest record)
+- ❌ **NO** `capital_closed`
+- ❌ **NO** `old_balance` recalculation
+- ❌ **NO** recalculated pending from NET
+- ❌ **NO** drift possible
+- ✅ Pending comes from **ONE function only**: `calculate_net_tallies_from_transactions()`
 
 ---
 
-## Net Profit / Total Loss Calculation
+## 4. NET TALLY CALCULATION
 
-### Definition
+The `calculate_net_tallies_from_transactions()` function is the **single source of truth** for pending amounts.
 
-**Net Profit** = The difference between Current Balance and Old Balance. This is the ONLY source of truth for all share calculations.
+### 4.1 Function Signature
 
-### Formula
-
-```
-net_profit = current_balance - old_balance
-
-IF net_profit < 0:
-    Total Loss = abs(net_profit)
-    Total Profit = 0
-ELSE IF net_profit > 0:
-    Total Loss = 0
-    Total Profit = net_profit
-ELSE:
-    Total Loss = 0
-    Total Profit = 0
+```python
+def calculate_net_tallies_from_transactions(client_exchange, as_of_date=None):
+    """
+    Calculate NET TALLIES from transactions (not from stored pending amounts).
+    
+    Returns:
+        dict with:
+        - net_client_tally: Net amount (positive = client owes you, negative = you owe client)
+        - net_company_tally: Net amount (always 0 for my clients)
+        - your_earnings: Your earnings from company split (1% of losses + 1% of profits)
+    """
 ```
 
-### Interpretation
+### 4.2 Calculation Formula
 
-- **Net Profit < 0** → Client is in LOSS (client owes you)
-- **Net Profit > 0** → Client is in PROFIT (you owe client)
-- **Net Profit = 0** → Break-even (no pending)
+```python
+# Get all LOSS transactions
+your_share_from_losses = Σ(LOSS.your_share_amount)
 
-### Important Rules
+# Get all PROFIT transactions
+your_share_from_profits = Σ(PROFIT.your_share_amount)
 
-✅ **DO:**
-- Always calculate Net Profit first
-- Use Net Profit as the single source of truth
-- Derive Total Loss/Profit from Net Profit
+# Get settlements where client paid you (reduces what client owes you)
+client_payments = Σ(SETTLEMENT.your_share_amount WHERE client_share_amount=0 AND your_share_amount>0)
 
-❌ **DON'T:**
-- Never mix loss and profit in one variable
-- Never use transaction tallies instead of Net Profit
-- Never accumulate losses/profits from individual transactions
+# Get settlements where you paid client (reduces what you owe client)
+admin_payments_to_client = Σ(SETTLEMENT.client_share_amount WHERE client_share_amount>0 AND your_share_amount=0)
 
-### Example
+# Calculate NET CLIENT TALLY
+net_client_tally_raw = (
+    your_share_from_losses 
+    - your_share_from_profits 
+    - client_payments 
+    + admin_payments_to_client
+)
 
-**Scenario:**
-- Old Balance = ₹100
-- Current Balance = ₹10
+# Round DOWN (share-space rounding)
+net_client_tally = round_share(net_client_tally_raw)
+```
 
-**Calculation:**
-- net_profit = ₹10 - ₹100 = -₹90
-- net_profit < 0 → Loss case
-- **Total Loss = ₹90**
-- **Total Profit = ₹0**
+### 4.3 Formula Breakdown
+
+**Net Client Tally** = (Income from Losses) - (Expense from Profits) - (Payments Received) + (Payments Made)
+
+Where:
+- **Income from Losses**: Your share amount from all LOSS transactions
+- **Expense from Profits**: Your share amount from all PROFIT transactions (negative because you owe)
+- **Payments Received**: Settlements where client paid you (reduces what they owe)
+- **Payments Made**: Settlements where you paid client (reduces what you owe)
+
+### 4.4 Sign Convention
+
+- **Positive `net_client_tally`**: Client owes you (show in "Clients Owe You" section)
+- **Negative `net_client_tally`**: You owe client (show in "You Owe Clients" section)
+- **Zero `net_client_tally`**: Fully settled (skip, don't show)
 
 ---
 
-## Share Calculations
+## 5. ROUNDING RULES
 
-### Definition
+### 5.1 Share-Space Rounding (ALWAYS ROUND DOWN)
 
-**Shares** = The portion of Total Loss or Total Profit that belongs to you (My Share) and the company (Company Share).
+**Function**: `round_share(amount, decimals=1)`
 
-### Key Principle
+**Rule**: 
+- ALWAYS round DOWN
+- NEVER round up
+- Prevents over-collection from clients
 
-**Shares are STATELESS** - They are recalculated fresh every time from Net Profit. They do NOT accumulate or store state.
+**Examples**:
+- `8.55 → 8.5`
+- `8.56 → 8.5`
+- `8.88 → 8.8`
+- `9.00 → 9.0`
 
-### Formula
+**Usage**: All pending amounts, shares, and payable amounts
 
-```
-# Step 1: Calculate Net Profit (see above)
-net_profit = current_balance - old_balance
+### 5.2 Capital-Space Rounding (ROUND HALF UP)
 
-# Step 2: Calculate share amounts (stateless)
-abs_net_profit = abs(net_profit)
+**Function**: `round_capital(amount, decimals=2)`
 
-My Share Amount = abs_net_profit × (my_share_pct / 100)
-Company Share Amount = abs_net_profit × (company_share_pct / 100)
-Combined Share Amount = My Share Amount + Company Share Amount
-```
+**Rule**:
+- Standard accounting rounding (ROUND_HALF_UP)
+- Used for ledger values and capital calculations
 
-### For My Clients
+**Examples**:
+- `8.555 → 8.56`
+- `8.554 → 8.55`
+- `8.555 → 8.56` (rounds up)
 
-- **My Share %** = Percentage from `ClientExchange.my_share_pct`
-- **Company Share %** = 0 (not applicable)
-- **My Share Amount** = `abs_net_profit × my_share_pct / 100`
-- **Company Share Amount** = 0
-- **Combined Share Amount** = My Share Amount
+**Usage**: Loss amounts, profit amounts, capital calculations
 
-### For Company Clients
+### 5.3 Why Different Rounding?
 
-- **My Share %** = 1% (typically, from `ClientExchange.my_share_pct`)
-- **Company Share %** = 9% (typically, from `ClientExchange.company_share_pct`)
-- **My Share Amount** = `abs_net_profit × 1%`
-- **Company Share Amount** = `abs_net_profit × 9%`
-- **Combined Share Amount** = My Share Amount + Company Share Amount
-
-### Important Rules
-
-✅ **DO:**
-- Always calculate shares from Net Profit
-- Recalculate shares fresh every time (stateless)
-- Use the same formula for both My Clients and Company Clients
-
-❌ **DON'T:**
-- Never accumulate shares from individual transactions
-- Never store share amounts in database (they're derived)
-- Never use transaction tallies for shares
-
-### Example
-
-**Scenario (My Client):**
-- Old Balance = ₹100
-- Current Balance = ₹10
-- My Share % = 10%
-
-**Calculation:**
-- net_profit = ₹10 - ₹100 = -₹90
-- abs_net_profit = ₹90
-- **My Share Amount = ₹90 × 10% = ₹9**
-- **Company Share Amount = ₹0**
-- **Combined Share Amount = ₹9**
-
-**Scenario (Company Client):**
-- Old Balance = ₹100
-- Current Balance = ₹10
-- My Share % = 1%
-- Company Share % = 9%
-
-**Calculation:**
-- net_profit = ₹10 - ₹100 = -₹90
-- abs_net_profit = ₹90
-- **My Share Amount = ₹90 × 1% = ₹0.9**
-- **Company Share Amount = ₹90 × 9% = ₹8.1**
-- **Combined Share Amount = ₹0.9 + ₹8.1 = ₹9**
+- **Share-space**: Client-facing amounts must NEVER round up (prevents over-collection)
+- **Capital-space**: Internal calculations use standard accounting rules
 
 ---
 
-## Share Percentages
+## 6. IMPLEMENTATION FLOW
 
-### My Share Percentage
+### 6.1 Pending Summary Function Flow
 
-**Definition:** Your share of profits/losses (as a percentage).
-
-**Source:** Stored in `ClientExchange.my_share_pct` field.
-
-**For My Clients:**
-- Typically ranges from 5% to 30%
-- This is your full share (no company split)
-
-**For Company Clients:**
-- Typically 1% (your cut from the company's 10% share)
-- The remaining 9% goes to the company
-
-### Company Share Percentage
-
-**Definition:** Company's share of profits/losses (as a percentage).
-
-**Source:** Stored in `ClientExchange.company_share_pct` field.
-
-**For My Clients:**
-- Always 0% (not applicable)
-
-**For Company Clients:**
-- Typically 9% (company's portion of the 10% share)
-- Combined with your 1% = 10% total share
-
-### Combined Share Percentage
-
-**Definition:** Total share percentage (My Share % + Company Share %).
-
-**Formula:**
-```
-Combined Share % = my_share_pct + company_share_pct
+```python
+def pending_summary(request):
+    # 1. Setup: Get date ranges, filters, settings
+    # 2. Get all active client exchanges
+    # 3. For each client_exchange:
+    for client_exchange in client_exchanges:
+        # 3a. Get cached values (capital-space)
+        funding = client_exchange.cached_total_funding or Decimal(0)
+        exchange_balance = client_exchange.cached_current_balance or Decimal(0)
+        NET = exchange_balance - funding  # For display only
+        
+        # 3b. Calculate net_share (share-space) - ONLY source for pending
+        net_tallies = calculate_net_tallies_from_transactions(client_exchange)
+        net_share = net_tallies["net_client_tally"]
+        
+        # 3c. Route to appropriate section
+        if net_share > 0:
+            # Add to "Clients Owe You" list
+            clients_owe_list.append({...})
+        elif net_share < 0:
+            # Add to "You Owe Clients" list
+            you_owe_list.append({...})
+        # else: skip (fully settled)
+    
+    # 4. Sort lists by absolute net_share (largest first)
+    # 5. Calculate totals
+    # 6. Render template
 ```
 
-**For My Clients:**
-- Combined Share % = My Share % (company_share_pct = 0)
+### 6.2 Transaction Types
 
-**For Company Clients:**
-- Combined Share % = 1% + 9% = 10% (typically)
+The system tracks three main transaction types:
 
-### Important Rules
+1. **FUNDING**: Money given to client
+   - Increases `cached_total_funding`
+   - Used for capital-space calculations
 
-✅ **DO:**
-- Always fetch percentages from `ClientExchange` model
-- Use `my_share_pct` and `company_share_pct` fields
-- Calculate combined percentage by addition
+2. **LOSS**: Client lost money
+   - Creates `LOSS` transaction with `your_share_amount`
+   - Increases what client owes you
 
-❌ **DON'T:**
-- Never hardcode percentages
-- Never calculate percentages from transaction amounts
-- Never assume percentages are the same for all clients
+3. **PROFIT**: Client made money
+   - Creates `PROFIT` transaction with `your_share_amount`
+   - Increases what you owe client
+
+4. **SETTLEMENT**: Payment recorded
+   - **Client pays you**: `SETTLEMENT` with `your_share_amount > 0`, `client_share_amount = 0`
+   - **You pay client**: `SETTLEMENT` with `client_share_amount > 0`, `your_share_amount = 0`
+   - Reduces pending amounts
 
 ---
 
-## Pending Amount Calculation
+## 7. CODE STRUCTURE
 
-### Definition
+### 7.1 Key Functions
 
-**Pending Amount** = The remaining amount that needs to be paid (either by client to you, or by you to client).
+#### `calculate_net_tallies_from_transactions(client_exchange, as_of_date=None)`
+- **Location**: `core/views.py` (line ~1002)
+- **Purpose**: Calculate net tallies from transaction ledger
+- **Returns**: Dict with `net_client_tally`, `net_company_tally`, `your_earnings`
 
-### Key Principle
+#### `pending_summary(request)`
+- **Location**: `core/views.py` (line ~1118)
+- **Purpose**: Main view function for pending payments page
+- **Flow**: Gets client exchanges → calculates net tallies → routes to sections → renders
 
-**Pending is STATEFUL** - It depends on settlements made. It's calculated as: Share Amount - Settlements.
+#### `round_share(amount, decimals=1)`
+- **Location**: `core/utils/money.py` (line ~20)
+- **Purpose**: Round share-space amounts DOWN
+- **Usage**: All pending amounts, shares, payable amounts
 
-### Formula
+#### `round_capital(amount, decimals=2)`
+- **Location**: `core/utils/money.py` (line ~57)
+- **Purpose**: Round capital-space amounts (ROUND_HALF_UP)
+- **Usage**: Loss amounts, profit amounts, capital calculations
+
+### 7.2 Data Flow
 
 ```
-# Step 1: Calculate Share Amount (stateless, from Net Profit)
-share_amount = abs(net_profit) × share_pct / 100
-
-# Step 2: Get settlements made
-IF net_profit < 0 (loss case):
-    settlements = SUM of SETTLEMENT transactions where client paid you
-    (your_share_amount > 0)
-ELSE IF net_profit > 0 (profit case):
-    settlements = SUM of SETTLEMENT transactions where you paid client
-    (client_share_amount > 0 AND your_share_amount = 0)
-
-# Step 3: Calculate Pending (stateful)
-pending = share_amount - settlements
-
-# Ensure pending is never negative
-pending = max(0, pending)
+ClientExchange
+    ↓
+cached_total_funding (capital-space)
+cached_current_balance (capital-space)
+    ↓
+calculate_net_tallies_from_transactions()
+    ↓
+Transaction.objects.filter(...)
+    ├─ LOSS transactions → your_share_from_losses
+    ├─ PROFIT transactions → your_share_from_profits
+    └─ SETTLEMENT transactions → client_payments, admin_payments_to_client
+    ↓
+net_client_tally = (losses - profits - payments_received + payments_made)
+    ↓
+round_share(net_client_tally)
+    ↓
+Route to section (clients_owe_list or you_owe_list)
 ```
-
-### For Loss Case (Client Owes You)
-
-**My Share Pending:**
-```
-my_share_pending = my_share_amount - client_payments_to_you
-```
-
-**Company Share Pending:**
-```
-company_share_pending = company_share_amount - client_payments_to_company
-```
-
-**Combined Share Pending:**
-```
-combined_share_pending = combined_share_amount - total_client_payments
-```
-
-### For Profit Case (You Owe Client)
-
-**My Share Pending:**
-```
-my_share_pending = my_share_amount - your_payments_to_client
-```
-
-**Company Share Pending:**
-```
-company_share_pending = company_share_amount - your_payments_to_client
-```
-
-**Combined Share Pending:**
-```
-combined_share_pending = combined_share_amount - total_your_payments
-```
-
-### Important Rules
-
-✅ **DO:**
-- Always subtract settlements from share amounts
-- Ensure pending is never negative (use max(0, pending))
-- Track settlements separately for My Share and Company Share
-
-❌ **DON'T:**
-- Never accumulate pending from previous calculations
-- Never ignore settlements when calculating pending
-- Never mix loss and profit settlements
-
-### Example
-
-**Scenario (Loss Case):**
-- Old Balance = ₹100
-- Current Balance = ₹10
-- My Share % = 10%
-- Client paid ₹3 (settlement)
-
-**Calculation:**
-- net_profit = ₹10 - ₹100 = -₹90
-- my_share_amount = ₹90 × 10% = ₹9
-- settlements = ₹3
-- **My Share Pending = ₹9 - ₹3 = ₹6**
 
 ---
 
-## Examples
+## 8. EXAMPLES
 
-### Example 1: My Client - Simple Loss
+### Example 1: Client in Loss (Client Owes You)
 
-**Transactions:**
-- FUNDING: ₹100
-- BALANCE_RECORD: ₹10
-- My Share %: 10%
+**Scenario**:
+- Client received ₹1000 funding
+- Client lost ₹500 (LOSS transaction created)
+- Your share % = 10%
+- No settlements yet
 
-**Calculations:**
-1. **Old Balance:** No settlement → ₹100 (sum of funding)
-2. **Current Balance:** ₹10 (latest balance record)
-3. **Net Profit:** ₹10 - ₹100 = -₹90
-4. **Total Loss:** ₹90
-5. **My Share Amount:** ₹90 × 10% = ₹9
-6. **Company Share Amount:** ₹0 (not applicable)
-7. **Combined Share Amount:** ₹9
-8. **Pending:** ₹9 - ₹0 = ₹9 (no settlements)
+**Calculation**:
+```python
+# Step 1: Get cached values
+funding = 1000
+exchange_balance = 500  # (1000 - 500)
+
+# Step 2: Calculate NET (for display)
+NET = 500 - 1000 = -500  # Loss
+
+# Step 3: Calculate net_share from ledger
+your_share_from_losses = 500 * 10% = 50
+your_share_from_profits = 0
+client_payments = 0
+admin_payments_to_client = 0
+
+net_client_tally = 50 - 0 - 0 + 0 = 50
+
+# Step 4: Route to section
+net_share = 50 > 0 → "Clients Owe You" section
+```
+
+**Result**: Client appears in "Clients Owe You" section with pending amount ₹50.00
 
 ---
 
-### Example 2: Company Client - Loss with Settlement
+### Example 2: Client in Profit (You Owe Client)
 
-**Transactions:**
-- FUNDING: ₹100
-- BALANCE_RECORD: ₹10
-- SETTLEMENT: ₹9 (client paid)
-- My Share %: 1%
-- Company Share %: 9%
+**Scenario**:
+- Client received ₹1000 funding
+- Client made ₹200 profit (PROFIT transaction created)
+- Your share % = 10%
+- No settlements yet
 
-**Calculations:**
-1. **Old Balance:** Settlement exists → Balance at settlement (₹10) + Funding after (₹0) = ₹10
-2. **Current Balance:** ₹10 (latest balance record)
-3. **Net Profit:** ₹10 - ₹10 = ₹0
-4. **Total Loss:** ₹0 (settlement closed the loss)
-5. **My Share Amount:** ₹0 × 1% = ₹0
-6. **Company Share Amount:** ₹0 × 9% = ₹0
-7. **Combined Share Amount:** ₹0
-8. **Pending:** ₹0 (fully settled)
+**Calculation**:
+```python
+# Step 1: Get cached values
+funding = 1000
+exchange_balance = 1200  # (1000 + 200)
+
+# Step 2: Calculate NET (for display)
+NET = 1200 - 1000 = 200  # Profit
+
+# Step 3: Calculate net_share from ledger
+your_share_from_losses = 0
+your_share_from_profits = 200 * 10% = 20
+client_payments = 0
+admin_payments_to_client = 0
+
+net_client_tally = 0 - 20 - 0 + 0 = -20
+
+# Step 4: Route to section
+net_share = -20 < 0 → "You Owe Clients" section
+```
+
+**Result**: Client appears in "You Owe Clients" section with amount ₹20.00
 
 ---
 
-### Example 3: My Client - Profit Case
+### Example 3: Partial Payment (Settlement)
 
-**Transactions:**
-- FUNDING: ₹100
-- BALANCE_RECORD: ₹200
-- My Share %: 10%
+**Scenario**:
+- Client owes ₹50 (from Example 1)
+- Client pays ₹30 (SETTLEMENT transaction created)
+- Remaining pending?
 
-**Calculations:**
-1. **Old Balance:** No settlement → ₹100
-2. **Current Balance:** ₹200
-3. **Net Profit:** ₹200 - ₹100 = ₹100
-4. **Total Profit:** ₹100
-5. **My Share Amount:** ₹100 × 10% = ₹10
-6. **Pending:** ₹10 (you owe client ₹10)
+**Calculation**:
+```python
+# Step 1: Get cached values (unchanged)
+funding = 1000
+exchange_balance = 500
+
+# Step 2: Calculate NET (unchanged)
+NET = -500
+
+# Step 3: Calculate net_share from ledger (UPDATED)
+your_share_from_losses = 50
+your_share_from_profits = 0
+client_payments = 30  # ← NEW: Settlement payment
+admin_payments_to_client = 0
+
+net_client_tally = 50 - 0 - 30 + 0 = 20
+
+# Step 4: Route to section
+net_share = 20 > 0 → Still in "Clients Owe You" section
+```
+
+**Result**: Client still appears in "Clients Owe You" section with remaining pending ₹20.00
 
 ---
 
-### Example 4: Company Client - Partial Settlement
+### Example 4: Fully Settled
 
-**Transactions:**
-- FUNDING: ₹100
-- BALANCE_RECORD: ₹40
-- SETTLEMENT: ₹3 (client paid)
-- My Share %: 1%
-- Company Share %: 9%
+**Scenario**:
+- Client owes ₹50 (from Example 1)
+- Client pays ₹50 (SETTLEMENT transaction created)
+- Fully settled?
 
-**Calculations:**
-1. **Old Balance:** Settlement exists → Balance at settlement (₹40) + Funding after (₹0) = ₹40
-2. **Current Balance:** ₹40
-3. **Net Profit:** ₹40 - ₹40 = ₹0
-4. **Total Loss:** ₹0 (settlement closed the loss)
-5. **My Share Amount:** ₹0 × 1% = ₹0
-6. **Company Share Amount:** ₹0 × 9% = ₹0
-7. **Combined Share Amount:** ₹0
-8. **Pending:** ₹0
+**Calculation**:
+```python
+# Step 3: Calculate net_share from ledger
+your_share_from_losses = 50
+your_share_from_profits = 0
+client_payments = 50  # Full payment
+admin_payments_to_client = 0
 
-**Note:** The settlement of ₹3 closed ₹30 of loss (₹3 / 10% = ₹30), which moved Old Balance from ₹100 to ₹40.
+net_client_tally = 50 - 0 - 50 + 0 = 0
+
+# Step 4: Route to section
+net_share = 0 → Skip (fully settled)
+```
+
+**Result**: Client does NOT appear in pending payments (fully settled)
 
 ---
 
-## Business Rules
+## 9. SETTLEMENT TRANSACTIONS
 
-### Rule 1: Settlement Resets Old Balance
+### 9.1 Settlement Types
 
-When a settlement occurs, Old Balance must move forward to the balance at settlement date. This prevents double-counting of losses.
-
-**Formula:**
-```
-Old Balance (after settlement) = balance_at_settlement + funding_after_settlement
-```
-
-### Rule 2: Net Profit is Single Source of Truth
-
-All share calculations must come from Net Profit. Never use transaction tallies or accumulated values.
-
-**Formula:**
-```
-net_profit = current_balance - old_balance
-share_amount = abs(net_profit) × share_pct / 100
+#### Client Pays You (Reduces What Client Owes)
+```python
+Transaction.objects.create(
+    client_exchange=client_exchange,
+    transaction_type=Transaction.TYPE_SETTLEMENT,
+    your_share_amount=30,  # You receive
+    client_share_amount=0,  # Client pays
+    ...
+)
 ```
 
-### Rule 3: Shares are Stateless
-
-Shares are recalculated fresh every time from Net Profit. They do not store or accumulate state.
-
-### Rule 4: Pending is Stateful
-
-Pending depends on settlements made. It's calculated as Share Amount minus Settlements.
-
-**Formula:**
-```
-pending = share_amount - settlements_made
+#### You Pay Client (Reduces What You Owe)
+```python
+Transaction.objects.create(
+    client_exchange=client_exchange,
+    transaction_type=Transaction.TYPE_SETTLEMENT,
+    your_share_amount=0,  # You pay
+    client_share_amount=20,  # Client receives
+    ...
+)
 ```
 
-### Rule 5: Break-Even Rule
+### 9.2 Settlement Impact
 
-If Old Balance equals Current Balance, there is no profit, no loss, and no pending.
+Settlements **directly reduce** the net tally:
 
-**Formula:**
-```
-IF old_balance == current_balance:
-    net_profit = 0
-    share_amount = 0
-    pending = 0
-```
-
-### Rule 6: Unified Logic for All Clients
-
-Both My Clients and Company Clients use the same calculation logic:
-- Same Old Balance calculation (settlement-aware)
-- Same Net Profit calculation
-- Same Share calculation (from Net Profit)
-- Only difference: Company Clients have two percentages (1% + 9%)
-
-### Rule 7: Never Override Old Balance
-
-Once Old Balance is calculated using settlement-aware logic, never override it with `sum(all_funding)`. This breaks the settlement reset mechanism.
+- **Client payment**: Subtracts from `net_client_tally` (reduces what client owes)
+- **Admin payment**: Adds to `net_client_tally` (reduces what you owe)
 
 ---
 
-## Technical Implementation
+## 10. EDGE CASES
 
-### Key Functions
+### 10.1 Zero Net Share
 
-1. **`get_old_balance_after_settlement(client_exchange, as_of_date=None)`**
-   - Calculates Old Balance using settlement-aware logic
-   - Returns: Decimal (Old Balance amount)
+If `net_share == 0`:
+- Client is fully settled
+- Skip adding to any list
+- Don't show in pending payments
 
-2. **`get_exchange_balance(client_exchange, as_of_date=None, use_cache=True)`**
-   - Gets Current Balance from latest BALANCE_RECORD
-   - Returns: Decimal (Current Balance amount)
+### 10.2 Negative Exchange Balance
 
-3. **`calculate_client_profit_loss(client_exchange)`**
-   - Calculates profit/loss data
-   - Returns: dict with exchange_balance and client_profit_loss
+If `exchange_balance < funding`:
+- Client is in loss
+- `NET` will be negative
+- But `net_share` determines which section (not `NET`)
 
-### Data Sources
+### 10.3 Multiple Settlements
 
-- **Old Balance:** `Transaction` model (TYPE_FUNDING, TYPE_SETTLEMENT)
-- **Current Balance:** `ClientDailyBalance` or `Transaction` model (TYPE_BALANCE_RECORD)
-- **Share Percentages:** `ClientExchange` model (my_share_pct, company_share_pct)
-- **Settlements:** `Transaction` model (TYPE_SETTLEMENT)
-
----
-
-## Summary
-
-The pending payments system uses a unified, settlement-aware approach:
-
-1. **Old Balance** = balance_at_settlement + funding_after (if settlement exists) OR sum(all_funding) (if no settlement)
-2. **Current Balance** = latest BALANCE_RECORD
-3. **Net Profit** = current_balance - old_balance (single source of truth)
-4. **Shares** = abs(net_profit) × share_pct (stateless, recalculated fresh)
-5. **Pending** = share_amount - settlements (stateful, depends on payments made)
-
-This ensures accuracy, prevents double-counting, and maintains consistency across all client types.
+Multiple settlements are automatically summed:
+```python
+client_payments = Σ(all SETTLEMENT.your_share_amount WHERE client_share_amount=0)
+```
 
 ---
 
-**Last Updated:** 2025-12-28
-**Version:** 1.0
+## 11. VALIDATION RULES
 
+### 11.1 Data Integrity
 
+- ✅ Pending is **always calculated**, never stored
+- ✅ Single source of truth: `calculate_net_tallies_from_transactions()`
+- ✅ No drift possible (ledger-based calculation)
 
+### 11.2 Rounding Validation
 
+- ✅ All share-space amounts use `round_share()` (round DOWN)
+- ✅ All capital-space amounts use `round_capital()` (round HALF UP)
+- ✅ No mixing of rounding methods
 
+---
 
+## 12. SUMMARY
+
+### Key Takeaways
+
+1. **Pending = Net Tally from Ledger**: Calculated from transactions, never stored
+2. **Two Sections**: Clients owe you (positive) vs You owe clients (negative)
+3. **Share-Space Rounding**: Always round DOWN to prevent over-collection
+4. **Settlements Reduce Net**: Payments directly reduce the net tally
+5. **Single Source of Truth**: `calculate_net_tallies_from_transactions()` is the ONLY function that calculates pending
+
+### Formula Summary
+
+```
+net_client_tally = (
+    Σ(LOSS.your_share_amount) 
+    - Σ(PROFIT.your_share_amount) 
+    - Σ(SETTLEMENT.your_share_amount WHERE client_pays) 
+    + Σ(SETTLEMENT.client_share_amount WHERE admin_pays)
+)
+
+net_share = round_share(net_client_tally)
+
+if net_share > 0:
+    → "Clients Owe You"
+elif net_share < 0:
+    → "You Owe Clients"
+else:
+    → Fully settled (skip)
+```
+
+---
+
+**End of Documentation**
 
