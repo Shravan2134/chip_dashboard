@@ -41,8 +41,8 @@
         <div class="card-value positive">₹ {{ your_profit|default:0 }}</div>
     </div>
     <div class="card">
-        <div class="card-title">Company Profit{% if date_range_mode %} ({{ start_date|date:'M d' }} - {{ end_date|date:'M d, Y' }}){% else %} (as of {{ as_of|date:'M d, Y' }}){% endif %}</div>
-        <div class="card-value">₹ {{ company_profit|default:0 }}</div>
+        <div class="card-title">Friend Profit{% if date_range_mode %} ({{ start_date|date:'M d' }} - {{ end_date|date:'M d, Y' }}){% else %} (as of {{ as_of|date:'M d, Y' }}){% endif %}</div>
+        <div class="card-value">₹ {{ friend_profit|default:0 }}</div>
     </div>
     <div class="card">
         <div class="card-title">Clients Owe You{% if date_range_mode %} ({{ start_date|date:'M d' }} - {{ end_date|date:'M d, Y' }}){% else %} (as of {{ as_of|date:'M d, Y' }}){% endif %}</div>
