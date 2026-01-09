@@ -466,7 +466,8 @@ def my_clients_list(request):
 @login_required
 
 
-@login_required
+
+
 def client_detail(request, pk):
     client = get_object_or_404(Client, pk=pk, user=request.user)
 
@@ -711,10 +712,22 @@ def client_delete(request, pk):
        - Cascades to Transactions, LossSnapshots, balances, ledgers, etc.
        - Use only when you truly want to wipe this client from the system.
     """
-    client = get_object_or_404(Client, pk=pk, user=request.user)
+    # Get client - check if it exists and belongs to the user
+    # If client has no user assigned (None), allow deletion (legacy data)
+    try:
+        client = Client.objects.get(pk=pk)
+        # Check if user matches, or if client has no user assigned (allow deletion)
+        if client.user is not None and client.user != request.user:
+            from django.http import Http404
+            raise Http404("Client not found")
+    except Client.DoesNotExist:
+        from django.contrib import messages
+        messages.error(request, "Client not found. It may have been already deleted.")
+        return redirect(reverse("client_list"))
     
     if request.method == "POST":
-
+        # Store client name before deletion for success/error messages
+        client_name = client.name
         
         try:
             # First delete all related objects for each client-exchange

@@ -16,6 +16,7 @@ urlpatterns = [
     path('clients/', views.client_list, name='client_list'),
     path('clients/create/', views.client_create, name='client_create'),
     path('clients/<int:pk>/', views.client_detail, name='client_detail'),
+    path('clients/<int:pk>/delete/', views.client_delete, name='client_delete'),
     
     # Exchanges
     path('exchanges/', views.exchange_list, name='exchange_list'),

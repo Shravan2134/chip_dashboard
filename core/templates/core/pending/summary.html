@@ -12,32 +12,32 @@
             <label style="display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px;">Search Client or Exchange</label>
             <input type="text" name="search" class="field-input" value="{{ search_query }}" placeholder="Search by client name, code, or exchange name..." style="width: 100%;">
         </div>
-        <div>
+    <div>
             <button type="submit" class="btn btn-primary">Search</button>
             {% if search_query %}
                 <a href="{% url 'pending_summary' %}" class="btn" style="margin-left: 8px;">Clear</a>
             {% endif %}
-        </div>
+            </div>
     </form>
-</div>
+    </div>
 
 <div style="background: var(--bg-content); border-radius: 8px; padding: 20px; border: 1px solid var(--border); margin-bottom: 24px;">
     <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: space-between;">
         <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
             <button onclick="showSection('clients-owe')" id="btn-clients-owe" class="btn btn-primary" style="background: var(--accent);">
-            Clients Owe You
-        </button>
+        Clients Owe You
+    </button>
             <button onclick="showSection('you-owe')" id="btn-you-owe" class="btn" style="background: var(--bg-content);">
-            You Owe Clients
-        </button>
-        </div>
+        You Owe Clients
+    </button>
+    </div>
         <div>
             <a href="{% url 'export_pending_csv' %}{% if search_query %}?search={{ search_query|urlencode }}{% endif %}" class="btn btn-primary" style="background: var(--success);">
                 📥 Download CSV
             </a>
         </div>
     </div>
-</div>
+        </div>
 
 <!-- Summary Cards -->
 <div class="card-grid" style="margin-bottom: 24px;">
@@ -99,7 +99,7 @@
                     <td>
                         {% if item.show_na %}
                             <span style="color: var(--muted);">N.A</span>
-                        {% else %}
+                            {% else %}
                             <strong>{{ item.my_share_amount|floatformat:0 }}</strong>
                         {% endif %}
                     </td>
@@ -148,17 +148,17 @@
         <div class="table-wrapper">
             <table>
             <thead>
-                <tr>
+            <tr>
                 <th>Client</th>
-                    <th>Exchange</th>
+                <th>Exchange</th>
                 <th>Funding</th>
                 <th>Exchange Balance</th>
                 <th>Client PnL</th>
                 <th>Final Share</th>
                 <th>Remaining</th>
                 <th>Share %</th>
-                    <th>Actions</th>
-                </tr>
+                <th>Actions</th>
+            </tr>
             </thead>
             <tbody>
                 {% for item in you_owe_clients %}
@@ -181,7 +181,7 @@
                     <td>
                         {% if item.show_na %}
                             <span style="color: var(--muted);">N.A</span>
-                        {% else %}
+                            {% else %}
                             <strong>{{ item.my_share_amount|floatformat:0 }}</strong>
                         {% endif %}
                     </td>

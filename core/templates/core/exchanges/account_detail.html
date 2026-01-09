@@ -8,8 +8,8 @@
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
     <a href="{% url 'add_funding' account.pk %}" class="btn btn-primary">Add Funding</a>
     <a href="{% url 'update_balance' account.pk %}" class="btn btn-primary">Update Balance</a>
-    {% with pnl=account.compute_client_pnl share=account.compute_my_share %}
-        {% if pnl != 0 and share > 0 %}
+    {% with settlement_info=account.get_remaining_settlement_amount %}
+        {% if settlement_info.remaining > 0 %}
             <a href="{% url 'record_payment' account.pk %}" class="btn" style="background: #fef3c7; color: #92400e;">Record Payment</a>
         {% endif %}
     {% endwith %}
