@@ -42,7 +42,7 @@
     </div>
     <div class="card">
         <div class="card-title">Friend Profit{% if date_range_mode %} ({{ start_date|date:'M d' }} - {{ end_date|date:'M d, Y' }}){% else %} (as of {{ as_of|date:'M d, Y' }}){% endif %}</div>
-        <div class="card-value">₹ {{ friend_profit|default:0 }}</div>
+        <div class="card-value {% if friend_profit >= 0 %}positive{% else %}negative{% endif %}">₹ {{ friend_profit|default:0|floatformat:1 }}</div>
     </div>
     <div class="card">
         <div class="card-title">Clients Owe You{% if date_range_mode %} ({{ start_date|date:'M d' }} - {{ end_date|date:'M d, Y' }}){% else %} (as of {{ as_of|date:'M d, Y' }}){% endif %}</div>

@@ -348,7 +348,21 @@ def dashboard(request):
     total_funding = sum(account.funding for account in all_accounts)
     total_exchange_balance = sum(account.exchange_balance for account in all_accounts)
     total_client_pnl = sum(account.compute_client_pnl() for account in all_accounts)
-    total_my_share = sum(account.compute_my_share() for account in all_accounts)
+    
+    # FINANCIAL INTERPRETATION: Apply sign to Total My Share
+    # - If client_pnl < 0 (LOSS): Client owes you → share is POSITIVE
+    # - If client_pnl > 0 (PROFIT): You owe client → share is NEGATIVE
+    total_my_share = Decimal(0)
+    for account in all_accounts:
+        client_pnl = account.compute_client_pnl()
+        share_amount = account.compute_my_share()
+        if client_pnl < 0:
+            # LOSS CASE: Client owes you → share is POSITIVE
+            total_my_share += share_amount
+        elif client_pnl > 0:
+            # PROFIT CASE: You owe client → share is NEGATIVE
+            total_my_share -= share_amount
+        # If client_pnl == 0, share is 0, so no change
     
     # Count totals
     total_clients = Client.objects.filter(user=request.user).count()
@@ -609,10 +623,21 @@ def settle_payment(request):
                 from django.db import transaction as db_transaction
                 from django.contrib import messages
                 with db_transaction.atomic():
+                    # FINAL SIGN LOGIC (THE LAW): Always from YOUR point of view
+                    # - Client paid YOU → +X (POSITIVE) - Your profit
+                    # - YOU paid client → -X (NEGATIVE) - Your loss
+                    # Minus never means "client paid", minus always means "you paid"
+                    if payment_type == 'client_pays':
+                        # Client pays YOU → amount is POSITIVE (your profit)
+                        transaction_amount = amount
+                    else:
+                        # YOU pay client → amount is NEGATIVE (your loss)
+                        transaction_amount = -amount
+                    
                     Transaction.objects.create(
     client_exchange=client_exchange,
                         type='RECORD_PAYMENT',
-                            amount=amount,
+                            amount=transaction_amount,  # Positive if client pays you, negative if you pay client
     date=tx_date,
     note=note or f"Settlement: ₹{amount} ({payment_type})"
                     )
@@ -1165,6 +1190,40 @@ def pending_summary(request):
         # Determine if client owes you or you owe client
         is_loss_case = client_pnl < 0  # Client owes you (loss)
         is_profit_case = client_pnl > 0  # You owe client (profit)
+        is_neutral_case = client_pnl == 0  # Neutral (funding == exchange_balance)
+        
+        # Handle neutral case (PnL = 0): Show with N.A
+        if is_neutral_case:
+            # Client MUST always appear in pending list, even when PnL = 0
+            # Show in "Clients Owe You" section with N.A
+            client_exchange.lock_initial_share_if_needed()
+            settlement_info = client_exchange.get_remaining_settlement_amount()
+            initial_final_share = settlement_info['initial_final_share']
+            remaining_amount = 0  # No remaining when PnL = 0
+            
+            # Use initial locked share for display
+            final_share = initial_final_share if initial_final_share > 0 else client_exchange.compute_my_share()
+            
+            # MASKED SHARE SETTLEMENT SYSTEM: Client MUST always appear in pending list
+            # When PnL = 0, always show N.A
+            show_na = True
+            
+            # Use default share percentage (loss_share_percentage or my_percentage)
+            share_pct = client_exchange.loss_share_percentage if client_exchange.loss_share_percentage > 0 else client_exchange.my_percentage
+            
+            # Add to list with N.A
+            clients_owe_list.append({
+                "client": client_exchange.client,
+                "exchange": client_exchange.exchange,
+                "account": client_exchange,
+                "client_pnl": client_pnl,  # Will be 0
+                "amount_owed": 0,  # No amount owed when PnL = 0
+                "my_share_amount": final_share,  # Final share (will show as N.A)
+                "remaining_amount": remaining_amount,  # Remaining = 0 (will show as N.A)
+                "share_percentage": share_pct,
+                "show_na": show_na,  # Flag for N.A display
+            })
+            continue
         
         if is_loss_case:
             # This is the "Clients Owe You" section
@@ -1192,6 +1251,7 @@ def pending_summary(request):
             share_pct = client_exchange.loss_share_percentage if client_exchange.loss_share_percentage > 0 else client_exchange.my_percentage
             
             # Add to list (ALWAYS, even if FinalShare = 0)
+            # FINANCIAL INTERPRETATION: Client PnL < 0 (LOSS) → Client owes you → Remaining is POSITIVE
             clients_owe_list.append({
                 "client": client_exchange.client,
                 "exchange": client_exchange.exchange,
@@ -1199,7 +1259,7 @@ def pending_summary(request):
                 "client_pnl": client_pnl,  # Masked in template
                 "amount_owed": total_loss,  # Amount owed = total loss (masked in template)
                 "my_share_amount": final_share,  # Final share (floor rounded)
-                "remaining_amount": remaining_amount,  # Remaining to settle
+                "remaining_amount": remaining_amount,  # Remaining to settle (POSITIVE - they owe you)
                 "share_percentage": share_pct,
                 "show_na": show_na,  # Flag for N.A display
                 })
@@ -1231,6 +1291,7 @@ def pending_summary(request):
             share_pct = client_exchange.profit_share_percentage if client_exchange.profit_share_percentage > 0 else client_exchange.my_percentage
             
             # Add to list (ALWAYS, even if FinalShare = 0)
+            # FINANCIAL INTERPRETATION: Client PnL > 0 (PROFIT) → You owe client → Remaining is NEGATIVE
             you_owe_list.append({
                 "client": client_exchange.client,
                 "exchange": client_exchange.exchange,
@@ -1238,7 +1299,7 @@ def pending_summary(request):
                 "client_pnl": client_pnl,  # Masked in template
                 "amount_owed": unpaid_profit,  # Amount you owe = profit (masked in template)
                 "my_share_amount": final_share,  # Final share (floor rounded)
-                "remaining_amount": remaining_amount,  # Remaining to settle
+                "remaining_amount": -remaining_amount if remaining_amount > 0 else 0,  # Remaining to settle (NEGATIVE - you owe them)
                 "share_percentage": share_pct,
                 "show_na": show_na,  # Flag for N.A display
             })
@@ -1325,14 +1386,43 @@ def export_pending_csv(request):
         # Compute Client_PnL using PIN-TO-PIN formula
         client_pnl = client_exchange.compute_client_pnl()
         
-        # CRITICAL FIX: Don't show PnL=0 clients in pending sections (FAILURE 4)
-        # PnL = 0 means neutral/closed - no liability in either direction
-        if client_pnl == 0:
-            continue  # Skip clients with PnL = 0
-        
         # Determine if client owes you or you owe client
         is_loss_case = client_pnl < 0  # Client owes you (loss)
         is_profit_case = client_pnl > 0  # You owe client (profit)
+        is_neutral_case = client_pnl == 0  # Neutral (funding == exchange_balance)
+        
+        # Handle neutral case (PnL = 0): Show with N.A
+        if is_neutral_case:
+            # Client MUST always appear in pending list, even when PnL = 0
+            # Show in "Clients Owe You" section with N.A
+            client_exchange.lock_initial_share_if_needed()
+            settlement_info = client_exchange.get_remaining_settlement_amount()
+            initial_final_share = settlement_info['initial_final_share']
+            remaining_amount = 0  # No remaining when PnL = 0
+            
+            # Use initial locked share for display
+            final_share = initial_final_share if initial_final_share > 0 else client_exchange.compute_my_share()
+            
+            # MASKED SHARE SETTLEMENT SYSTEM: Client MUST always appear in pending list
+            # When PnL = 0, always show N.A
+            show_na = True
+            
+            # Use default share percentage (loss_share_percentage or my_percentage)
+            share_pct = client_exchange.loss_share_percentage if client_exchange.loss_share_percentage > 0 else client_exchange.my_percentage
+            
+            # Add to list with N.A
+            clients_owe_list.append({
+                "client": client_exchange.client,
+                "exchange": client_exchange.exchange,
+                "account": client_exchange,
+                "client_pnl": client_pnl,  # Will be 0
+                "amount_owed": 0,  # No amount owed when PnL = 0
+                "my_share_amount": final_share,  # Final share (will show as N.A)
+                "remaining_amount": remaining_amount,  # Remaining = 0 (will show as N.A)
+                "share_percentage": share_pct,
+                "show_na": show_na,  # Flag for N.A display
+            })
+            continue
         
         if is_loss_case:
             # This is the "Clients Owe You" section
@@ -1391,6 +1481,7 @@ def export_pending_csv(request):
             share_pct = client_exchange.profit_share_percentage if client_exchange.profit_share_percentage > 0 else client_exchange.my_percentage
             
             # Add to list (ALWAYS, even if FinalShare = 0)
+            # FINANCIAL INTERPRETATION: Client PnL > 0 (PROFIT) → You owe client → Remaining is NEGATIVE
             you_owe_list.append({
                 "client": client_exchange.client,
                 "exchange": client_exchange.exchange,
@@ -1398,7 +1489,7 @@ def export_pending_csv(request):
                 "client_pnl": client_pnl,
                 "amount_owed": unpaid_profit,
                 "my_share_amount": final_share,
-                "remaining_amount": remaining_amount,
+                "remaining_amount": -remaining_amount if remaining_amount > 0 else 0,  # Remaining to settle (NEGATIVE - you owe them)
                 "share_percentage": share_pct,
                 "show_na": show_na,  # Flag for N.A display
             })
@@ -1653,29 +1744,121 @@ def report_overview(request):
     # Overall totals (filtered by time travel if applicable)
     total_turnover = base_qs.aggregate(total=Sum("amount"))["total"] or 0
     
-    # 📘 YOUR TOTAL PROFIT Calculation
-    # NOTE: TYPE_PROFIT and TYPE_LOSS don't exist in current Transaction model
-    # These transaction types are not used in the PIN-TO-PIN system
-    # Profit/Loss is calculated from ClientExchangeAccount, not from Transaction records
+    # 📘 YOUR TOTAL PROFIT Calculation (CORRECTNESS LOGIC)
+    # SINGLE SOURCE OF TRUTH: RECORD_PAYMENT transactions only
+    # Sign convention: +X = Client paid YOU, -X = YOU paid client
+    # No PnL checks, no locked_initial_pnl checks, no fallback logic needed
     from decimal import Decimal
-    your_total_profit_from_profits = Decimal(0)
+    from django.utils import timezone
+    from datetime import datetime
     
-    # 📘 YOUR TOTAL INCOME from Losses
-    # NOTE: TYPE_PROFIT and TYPE_LOSS don't exist in current Transaction model
-    # These transaction types are not used in the PIN-TO-PIN system
-    # Profit/Loss is calculated from ClientExchangeAccount, not from Transaction records
-    your_total_income_from_losses = Decimal(0)
-    
-    # 📘 YOUR NET PROFIT = Income from Losses - Expense from Profits
-    # This shows your actual earnings (positive = you earned, negative = you owe)
-    your_total_profit = your_total_income_from_losses - your_total_profit_from_profits
-    
-    # 📘 COMPANY PROFIT Calculation
-    # Sum of company_share_amount from ALL transactions (both profit and loss)
-    # For company clients: company_share_amount = 9% of movement
-    company_profit = (
-        Decimal(0)  # All clients are now my clients, company share is always 0
+    # Get all RECORD_PAYMENT transactions for user
+    payment_qs = Transaction.objects.filter(
+        client_exchange__client__user=request.user,
+        type='RECORD_PAYMENT'
     )
+    
+    # Apply client filter (if specified)
+    if client_id:
+        payment_qs = payment_qs.filter(client_exchange__client_id=client_id)
+    
+    # Apply date filter (if specified) - convert date to datetime for comparison
+    if date_filter:
+        filter_dict = {}
+        if 'date__gte' in date_filter:
+            date_gte = date_filter['date__gte']
+            if isinstance(date_gte, date):
+                filter_dict['date__gte'] = timezone.make_aware(
+                    datetime.combine(date_gte, datetime.min.time())
+                )
+            else:
+                filter_dict['date__gte'] = date_gte
+        if 'date__lte' in date_filter:
+            date_lte = date_filter['date__lte']
+            if isinstance(date_lte, date):
+                filter_dict['date__lte'] = timezone.make_aware(
+                    datetime.combine(date_lte, datetime.max.time())
+                )
+            else:
+                filter_dict['date__lte'] = date_lte
+        if filter_dict:
+            payment_qs = payment_qs.filter(**filter_dict)
+    
+    # Calculate total profit (simple sum - sign is absolute truth)
+    your_total_profit = payment_qs.aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    
+    # Calculate breakdown for display
+    your_total_income_from_clients = payment_qs.filter(amount__gt=0).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal(0)
+    
+    your_total_paid_to_clients = abs(
+        payment_qs.filter(amount__lt=0).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    )
+    
+    # 📘 MY PROFIT AND FRIEND PROFIT Calculation (CORRECTNESS LOGIC)
+    # SINGLE SOURCE OF TRUTH: RECORD_PAYMENT transactions only
+    # Sign convention: +X = Client paid YOU, -X = YOU paid client
+    # Payment amount IS the signed amount - no direction determination needed
+    # Split formula: my_profit = payment × (my_own_percentage / my_percentage)
+    # Mandatory identity: payment == my_profit + friend_profit
+    
+    my_profit_total = Decimal(0)
+    friend_profit_total = Decimal(0)
+    
+    # Use the same payment_qs queryset from Your Total Profit calculation
+    # (already filtered by user, client, and date)
+    payment_transactions = payment_qs.select_related(
+        'client_exchange', 
+        'client_exchange__report_config'
+    )
+    
+    for tx in payment_transactions:
+        # Payment amount IS the signed amount (sign is absolute truth)
+        # +X = client paid me, -X = I paid client
+        payment_amount = Decimal(str(tx.amount))  # Can be positive or negative
+        
+        account = tx.client_exchange
+        
+        # Get total percentage (my_percentage)
+        my_total_pct = Decimal(str(account.my_percentage))
+        
+        if my_total_pct == 0:
+            continue
+        
+        # Get split percentages from ClientExchangeReportConfig
+        report_config = getattr(account, 'report_config', None)
+        
+        if report_config:
+            my_own_pct = Decimal(str(report_config.my_own_percentage))
+            friend_pct = Decimal(str(report_config.friend_percentage))
+            
+            # Split payment amount directly (works for both +ve and -ve)
+            # Example: payment=+9, my_percentage=10, my_own_percentage=6, friend_percentage=4
+            # my_profit = 9 × 6 / 10 = 5.4
+            # friend_profit = 9 × 4 / 10 = 3.6
+            # Verification: 5.4 + 3.6 = 9 ✓
+            #
+            # Example: payment=-5, my_percentage=10, my_own_percentage=6, friend_percentage=4
+            # my_profit = -5 × 6 / 10 = -3.0
+            # friend_profit = -5 × 4 / 10 = -2.0
+            # Verification: -3.0 + (-2.0) = -5 ✓
+            my_profit_part = payment_amount * my_own_pct / my_total_pct
+            friend_profit_part = payment_amount * friend_pct / my_total_pct
+        else:
+            # No report config: all goes to me
+            my_profit_part = payment_amount
+            friend_profit_part = Decimal(0)
+        
+        my_profit_total += my_profit_part
+        friend_profit_total += friend_profit_part
+    
+    # Verify aggregated totals reconcile (for correctness)
+    # Your Total Profit == Σ(My Profit) + Σ(Friend Profit)
+    # This should always hold true
+    
+    # Remove company_profit (obsolete)
+    company_profit = Decimal(0)
 
     # Daily trends for last 30 days (or filtered by time travel)
     if time_travel_mode and start_date_str and end_date_str:
@@ -1700,11 +1883,24 @@ def report_overview(request):
     
     for item in daily_transactions:
         tx_date = item['date']
-        # NOTE: TYPE_PROFIT and TYPE_LOSS don't exist - profit/loss calculated from RECORD_PAYMENT
-        # Daily profit/loss is calculated separately from RECORD_PAYMENT transactions
-        daily_data[tx_date]["profit"] += 0  # Set to 0 - profit/loss not tracked in Transaction model
-        daily_data[tx_date]["loss"] += 0  # Set to 0 - profit/loss not tracked in Transaction model
         daily_data[tx_date]["turnover"] += float(item["turnover_sum"] or 0)
+    
+    # Daily profit/loss from RECORD_PAYMENT transactions (CORRECTNESS LOGIC)
+    daily_payments = base_qs.filter(
+        type='RECORD_PAYMENT',
+        date__gte=start_date,
+        date__lte=end_date
+    ).values("date").annotate(
+        profit_sum=Sum("amount")
+    )
+    
+    for item in daily_payments:
+        tx_date = item['date']
+        profit_amount = float(item["profit_sum"] or 0)
+        if profit_amount > 0:
+            daily_data[tx_date]["profit"] += profit_amount
+        elif profit_amount < 0:
+            daily_data[tx_date]["loss"] += abs(profit_amount)
     
     # Create sorted date list and data arrays
     # Only include dates up to end_date
@@ -1772,11 +1968,8 @@ def report_overview(request):
         
         # Calculate month end date
         if month_date.month == 12:
-
-
-            pass
+            month_end = date(month_date.year, 12, 31)
         else:
-
             month_end = month_date.replace(month=month_date.month + 1) - timedelta(days=1)
 
 
@@ -1786,14 +1979,17 @@ def report_overview(request):
         # Get transactions for this month (filtered by time travel if applicable)
         month_transactions = base_qs.filter(
             date__gte=month_date,
-
             date__lte=month_end
-
         )
         
-        # NOTE: TYPE_PROFIT and TYPE_LOSS don't exist - set to 0
-        month_profit_val = 0
-        month_loss_val = 0
+        # Monthly profit/loss from RECORD_PAYMENT transactions (CORRECTNESS LOGIC)
+        month_payments = month_transactions.filter(type='RECORD_PAYMENT')
+        month_profit_val = month_payments.filter(amount__gt=0).aggregate(
+            total=Sum("amount")
+        )["total"] or 0
+        month_loss_val = abs(month_payments.filter(amount__lt=0).aggregate(
+            total=Sum("amount")
+        )["total"] or 0)
         
         month_turnover_val = month_transactions.aggregate(total=Sum("amount"))["total"] or 0
         
@@ -1826,9 +2022,14 @@ def report_overview(request):
             date__lte=week_end
         )
         
-        # NOTE: your_share_amount field doesn't exist in Transaction model
-        week_profit_val = 0
-        week_loss_val = 0
+        # Weekly profit/loss from RECORD_PAYMENT transactions (CORRECTNESS LOGIC)
+        week_payments = week_transactions.filter(type='RECORD_PAYMENT')
+        week_profit_val = week_payments.filter(amount__gt=0).aggregate(
+            total=Sum("amount")
+        )["total"] or 0
+        week_loss_val = abs(week_payments.filter(amount__lt=0).aggregate(
+            total=Sum("amount")
+        )["total"] or 0)
         
         week_turnover_val = week_transactions.aggregate(total=Sum("amount"))["total"] or 0
         
@@ -1851,7 +2052,11 @@ def report_overview(request):
         "today": today,
         "total_turnover": total_turnover,
         "your_total_profit": your_total_profit,
-        "company_profit": company_profit,
+        "your_total_income_from_clients": your_total_income_from_clients,
+        "your_total_paid_to_clients": your_total_paid_to_clients,
+        "my_profit": my_profit_total,
+        "friend_profit": friend_profit_total,
+        "company_profit": company_profit,  # Kept for backward compatibility, always 0
         "daily_labels": json.dumps(date_labels),
         "daily_profit": json.dumps(profit_data),
         "daily_loss": json.dumps(loss_data),
@@ -3587,11 +3792,22 @@ def record_payment(request, account_id):
                     )
                     
                     # Create transaction record for audit trail
+                    # FINAL SIGN LOGIC (THE LAW): Always from YOUR point of view
+                    # - Client paid YOU → +X (POSITIVE) - Your profit
+                    # - YOU paid client → -X (NEGATIVE) - Your loss
+                    # Minus never means "client paid", minus always means "you paid"
+                    if client_pnl < 0:
+                        # LOSS CASE: Client pays YOU → amount is POSITIVE (your profit)
+                        transaction_amount = paid_amount
+                    else:
+                        # PROFIT CASE: YOU pay client → amount is NEGATIVE (your loss)
+                        transaction_amount = -paid_amount
+                    
                     Transaction.objects.create(
                         client_exchange=account,
                         date=timezone.now(),
                         type='RECORD_PAYMENT',
-                        amount=paid_amount,
+                        amount=transaction_amount,  # Positive if client pays you, negative if you pay client
                         exchange_balance_after=account.exchange_balance,
                         notes=notes or f"Payment recorded: {paid_amount}. {action_desc}"
                     )

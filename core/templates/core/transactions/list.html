@@ -41,13 +41,6 @@
                 <option value="RECORD_PAYMENT" {% if selected_type == 'RECORD_PAYMENT' %}selected{% endif %}>Record Payment</option>
             </select>
         </div>
-        <div style="flex: 1; min-width: 200px;">
-            <label style="display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px;">Search</label>
-            <input type="text" name="search" class="field-input" value="{{ search_query }}" placeholder="Search by client, exchange, or notes...">
-            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
-                Search by client name/code, exchange name, or transaction notes
-            </div>
-        </div>
         <div>
             <button type="submit" class="btn btn-primary">Filter</button>
             <a href="{% url 'transaction_list' %}" class="btn" style="margin-left: 8px;">Clear</a>

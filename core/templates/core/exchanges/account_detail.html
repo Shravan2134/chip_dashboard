@@ -67,20 +67,6 @@
             {% endif %}
         </div>
     </div>
-    <div class="card">
-        <div class="card-title">Settlement Status</div>
-        <div class="card-value">
-            {% if pnl == 0 %}
-                <span style="color: #10b981; font-weight: 600;">✓ Trading Flat (PnL = 0)</span>
-            {% elif share == 0 %}
-                <span style="color: #6b7280; font-weight: 600;">N.A (Zero Share)</span>
-            {% elif remaining == 0 %}
-                <span style="color: #10b981; font-weight: 600;">✓ Settlement Complete</span>
-            {% else %}
-                <span style="color: #f59e0b; font-weight: 600;">⚠ Action Required</span>
-            {% endif %}
-        </div>
-    </div>
 </div>
 
 <!-- Account Information -->

@@ -229,9 +229,14 @@
         </div>
     </div>
     <div class="stat-box profit">
+        <div class="stat-label">My Profit</div>
+        <div class="stat-value {% if my_profit >= 0 %}positive{% else %}negative{% endif %}">₹ {{ my_profit|default:0|floatformat:1 }}</div>
+        <div class="stat-note">Your share from settlements (split from ClientExchangeReportConfig)</div>
+    </div>
+    <div class="stat-box profit">
         <div class="stat-label">Friend Profit</div>
-        <div class="stat-value">₹ {{ friend_profit|default:0|floatformat:1 }}</div>
-        <div class="stat-note">Friend share from settlements</div>
+        <div class="stat-value {% if friend_profit >= 0 %}positive{% else %}negative{% endif %}">₹ {{ friend_profit|default:0|floatformat:1 }}</div>
+        <div class="stat-note">Friend share from settlements (split from ClientExchangeReportConfig)</div>
     </div>
 </div>
 

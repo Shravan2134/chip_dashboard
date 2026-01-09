@@ -22,12 +22,6 @@
         </div>
     </div>
     
-    <div style="background: #fef3c7; padding: 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #f59e0b;">
-        <div style="font-size: 13px; color: #92400e;">
-            <strong>IMPORTANT:</strong> Only exchange_balance will change. Funding remains untouched. Use this for trades, fees, profits, losses.
-        </div>
-    </div>
-    
     <form method="post">
         {% csrf_token %}
         <div class="form-row">
@@ -42,7 +36,6 @@
             <label class="field-label">Transaction Type *</label>
             <select name="transaction_type" class="field-input" required>
                 <option value="TRADE">Trade</option>
-                <option value="FEE">Fee</option>
                 <option value="ADJUSTMENT">Adjustment</option>
             </select>
             <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">

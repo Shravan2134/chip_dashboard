@@ -36,7 +36,7 @@
     </div>
     <div class="card">
         <div class="card-title">Friend Profit</div>
-        <div class="card-value">₹ {{ friend_profit|default:0 }}</div>
+        <div class="card-value {% if friend_profit >= 0 %}positive{% else %}negative{% endif %}">₹ {{ friend_profit|default:0|floatformat:1 }}</div>
     </div>
     <div class="card">
         <div class="card-title">Avg Daily Turnover</div>

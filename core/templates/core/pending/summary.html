@@ -196,7 +196,7 @@
                     <td>
                         {% if item.show_na %}
                             <span style="color: var(--muted); font-size: 12px;">N.A</span>
-                        {% elif item.remaining_amount > 0 %}
+                        {% elif item.remaining_amount != 0 %}
                             <a href="{% url 'record_payment' item.account.pk %}?redirect_to=pending_summary" class="btn btn-sm btn-primary" style="margin-right: 4px;">Record Payment</a>
                         {% else %}
                             <span style="color: var(--muted); font-size: 12px;">Settled</span>

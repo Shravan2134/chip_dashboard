@@ -34,7 +34,9 @@
     </div>
     <div class="card">
         <div class="card-title">Total My Share</div>
-        <div class="card-value">{{ total_my_share|floatformat:0 }}</div>
+        <div class="card-value {% if total_my_share > 0 %}positive{% elif total_my_share < 0 %}negative{% endif %}">
+            {{ total_my_share|floatformat:0 }}
+        </div>
     </div>
 </div>
 
