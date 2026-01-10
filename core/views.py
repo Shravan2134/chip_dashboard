@@ -3431,9 +3431,19 @@ def link_client_to_exchange(request):
             messages.error(request, f"Error linking client to exchange: {str(e)}")
     
     # GET request - show form
+    # Check if client is pre-selected via query parameter
+    selected_client_id = request.GET.get("client")
+    if selected_client_id:
+        # Validate that the client exists and belongs to the user
+        try:
+            Client.objects.get(pk=selected_client_id, user=request.user)
+        except Client.DoesNotExist:
+            selected_client_id = None  # Invalid client ID, don't pre-select
+    
     return render(request, "core/exchanges/link_to_client.html", {
         "clients": Client.objects.filter(user=request.user).order_by("name"),
         "exchanges": Exchange.objects.all().order_by("name"),
+        "selected_client_id": selected_client_id,  # Pass the string ID directly
     })
 
 

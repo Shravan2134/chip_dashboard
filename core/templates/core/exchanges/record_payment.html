@@ -36,29 +36,6 @@
         </div>
     </div>
     
-    {% if final_share == 0 %}
-        {# Zero-share behavior: No settlement allowed #}
-    {% elif client_pnl < 0 %}
-    <div style="background: #fef3c7; padding: 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #f59e0b;">
-        <div style="font-size: 13px; color: #92400e;">
-            <strong>LOSS CASE:</strong> Client is in loss.<br>
-            Recording payment will reduce <strong>funding</strong> by masked capital.<br>
-            Formula: Funding = Funding − MaskedCapital<br>
-            Where: MaskedCapital = SharePayment × share_percentage<br>
-            <strong>Remaining settlement amount: {{ remaining_amount|floatformat:0 }}</strong>
-        </div>
-    </div>
-    {% elif client_pnl > 0 %}
-    <div style="background: #d1fae5; padding: 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #10b981;">
-        <div style="font-size: 13px; color: #065f46;">
-            <strong>PROFIT CASE:</strong> Client is in profit.<br>
-            Recording payment will reduce <strong>exchange_balance</strong> by masked capital.<br>
-            Formula: ExchangeBalance = ExchangeBalance − MaskedCapital<br>
-            Where: MaskedCapital = SharePayment × share_percentage<br>
-            <strong>Remaining settlement amount: {{ remaining_amount|floatformat:0 }}</strong>
-        </div>
-    </div>
-    {% endif %}
     
     <form method="post">
         {% csrf_token %}
@@ -72,8 +49,7 @@
             {% else %}
                 <input type="number" name="amount" class="field-input" min="1" max="{{ remaining_amount }}" required>
                 <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">
-                    Maximum: {{ remaining_amount|floatformat:0 }} (Remaining settlement amount)<br>
-                    <small>Note: This is SharePayment. MaskedCapital = SharePayment × share_percentage will be calculated automatically.</small>
+                    Maximum: {{ remaining_amount|floatformat:0 }} (Remaining settlement amount)
                 </div>
             {% endif %}
         </div>

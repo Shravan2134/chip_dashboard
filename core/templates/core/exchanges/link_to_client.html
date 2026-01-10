@@ -22,7 +22,7 @@
             <select name="client" class="field-input" required>
                 <option value="">-- Select Client --</option>
                 {% for client in clients %}
-                    <option value="{{ client.pk }}">{{ client.name }}{% if client.code %} ({{ client.code }}){% endif %}</option>
+                    <option value="{{ client.pk }}" {% if selected_client_id|default:"" == client.pk|stringformat:"s" %}selected{% endif %}>{{ client.name }}{% if client.code %} ({{ client.code }}){% endif %}</option>
                 {% endfor %}
             </select>
         </div>
@@ -40,16 +40,9 @@
         <div class="form-row">
             <label class="field-label">My Total % *</label>
             <input type="number" name="my_percentage" class="field-input" min="0" max="100" required>
-            <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">
-                Your total percentage share (0-100). Used for system logic.
-            </div>
         </div>
         
         <div style="border-top: 1px solid var(--border); margin: 20px 0; padding-top: 20px;">
-            <div style="font-size: 14px; color: var(--muted); margin-bottom: 12px;">
-                <strong>Report Configuration (Optional)</strong><br>
-                These percentages are used ONLY for reports, not system logic.
-            </div>
             
             <div class="form-row">
                 <label class="field-label">Friend % (Report Only)</label>
