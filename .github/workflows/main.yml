@@ -1,4 +1,4 @@
-name: Django CI/CD Direct Inline Credentials
+name: Django CI/CD (SSH Password – Inline)
 
 on:
   push:
@@ -42,16 +42,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to Hostinger VPS
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: "72.61.148.117"
-          username: "root"
-          key: |
-            -----BEGIN OPENSSH PRIVATE KEY-----
-            YOUR_PRIVATE_SSH_KEY_HERE
-            -----END OPENSSH PRIVATE KEY-----
-          script: |
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Deploy to Hostinger VPS using password
+        run: |
+          sshpass -p "To1#NXG(ihxodLqmDUU6" ssh -o StrictHostKeyChecking=no root@72.61.148.117 << 'EOF'
             export DJANGO_SECRET_KEY="unsafe-super-secret-key-123"
             export ALLOWED_HOSTS="pravoo.in,www.pravoo.in"
 
@@ -64,3 +62,4 @@ jobs:
             python manage.py collectstatic --noinput
 
             sudo systemctl restart gunicorn
+          EOF
