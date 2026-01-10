@@ -1,0 +1,20 @@
+[Unit]
+Description=gunicorn daemon for Softwar_application (broker_portal)
+After=network.target
+
+[Service]
+# Change User to the system user that should run the service (do NOT run as root if avoidable)
+User=REPLACE_WITH_YOUR_USER
+Group=www-data
+
+WorkingDirectory=/root/Broker_portal/Softwar_application
+Environment="PATH=/root/Broker_portal/Softwar_application/myenv/bin"
+
+ExecStart=/root/Broker_portal/Softwar_application/myenv/bin/gunicorn \
+  --access-logfile - \
+  --workers 3 \
+  --bind unix:/run/gunicorn-broker_portal.sock \
+  broker_portal.wsgi:application
+
+[Install]
+WantedBy=multi-user.target
