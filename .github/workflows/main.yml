@@ -1,0 +1,65 @@
+name: Django CI/CD (SSH Password – Inline)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Django checks
+        env:
+          DJANGO_SECRET_KEY: "unsafe-super-secret-key-123"
+          ALLOWED_HOSTS: "pravoo.in,www.pravoo.in"
+        run: |
+          python manage.py check
+
+      # - name: Run tests
+      #   env:
+      #     DJANGO_SECRET_KEY: "unsafe-super-secret-key-123"
+      #     ALLOWED_HOSTS: "pravoo.in,www.pravoo.in"
+      #   run: |
+      #     python manage.py test
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Deploy to Hostinger VPS using password
+        run: |
+          sshpass -p "To1#NXG(ihxodLqmDUU6" ssh -o StrictHostKeyChecking=no root@72.61.148.117 << 'EOF'
+            export DJANGO_SECRET_KEY="unsafe-super-secret-key-123"
+            export ALLOWED_HOSTS="pravoo.in,www.pravoo.in"
+
+            cd /root/Broker_portal/Softwar_application
+            git pull origin main
+            source myenv/bin/activate
+
+            pip install -r requirements.txt
+            python manage.py migrate --noinput
+            python manage.py collectstatic --noinput
+
+            sudo systemctl restart gunicorn
+          EOF
