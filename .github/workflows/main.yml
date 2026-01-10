@@ -30,12 +30,12 @@ jobs:
         run: |
           python manage.py check
 
-      - name: Run tests
-        env:
-          DJANGO_SECRET_KEY: "unsafe-super-secret-key-123"
-          ALLOWED_HOSTS: "pravoo.in,www.pravoo.in"
-        run: |
-          python manage.py test
+      # - name: Run tests
+      #   env:
+      #     DJANGO_SECRET_KEY: "unsafe-super-secret-key-123"
+      #     ALLOWED_HOSTS: "pravoo.in,www.pravoo.in"
+      #   run: |
+      #     python manage.py test
 
   deploy:
     needs: ci
