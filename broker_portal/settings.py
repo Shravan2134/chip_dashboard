@@ -17,16 +17,26 @@ ALLOWED_HOSTS = ["72.61.148.117", "2a02:4780:5e:6e9d::1", "localhost", "127.0.0.
 # For quick testing only you can use ["*"], but don't do that in production.
 
 # Application definition
-INSTALLED_APPS = [s
+# INSTALLED_APPS = [
+#     'django.contrib.admin',
+#     'django.contrib.auth',
+#     'django.contrib.contenttypes',
+#     'django.contrib.sessions',
+#     'django.contrib.messages',
+#     'django.contrib.staticfiles',
+#     # Local apps
+#     'core',
+# ]
+
+INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    # Local apps
-    'core',
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
